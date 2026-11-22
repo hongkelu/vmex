@@ -1,10 +1,9 @@
 """Single-stage optimization at the three-term free boundary: a loss and constraint rows of coils and plasma
-parameters, with exact design gradients (:class:`ThreeTermsFreeBoundaryProblem`).
+parameters, with their design gradients (:class:`ThreeTermsFreeBoundaryProblem`).
 
 A trial is the boundary fit of its design, warm-started from the first-order prediction of the latest linearized
-point and accepted when every interface residual is within ``boundary_max_residual``; its gradient re-solves it to
-the deck's tolerance, polishes it once with its own Jacobian and differentiates it (the implicit function theorem
-of the boundary fit).
+point and accepted when every interface residual is within ``boundary_max_residual``; its gradient polishes the fit
+once with its own Jacobian and differentiates it (the implicit function theorem of the boundary fit).
 """
 
 from __future__ import annotations
@@ -14,7 +13,6 @@ from pathlib import Path
 import re
 
 import numpy as np
-import scipy.linalg
 
 import jax
 import jax.numpy as jnp
@@ -26,24 +24,6 @@ from .problem import FunctionProblem
 #: The gradient's polish of a trial: its own Jacobian, to this relative cost change in at most this many evaluations,
 #: kept when it cuts the cost below this fraction.
 GRADIENT_POLISH_FTOL, GRADIENT_POLISH_NFEV, GRADIENT_POLISH_KEEP = 1e-4, 20, 0.9
-#: The Newton products' (``gradient_rounds``, ``gradient_fit_xtol``) one-sided difference step in the column-scaled
-#: model coordinates.
-NEWTON_GRADIENT_EPS = 1e-4
-#: The Newton gradient's soft directions: eigenvectors of the column-scaled Gauss-Newton matrix with an eigenvalue below
-#: this fraction of the largest.  A difference product cannot resolve them (a near-axisymmetric plasma's radial shift has
-#: 1e-7): they are solved by Gauss-Newton, whose residual curvature is negligible along them.
-SOFT_DIRECTION_TOL = 1e-5
-#: ``gradient_fit_xtol``: the fit's Newton steps before its gradient: at most this many trial solves in all; a step
-#: of the curvature model that cuts the Gauss-Newton step by less than ``GRADIENT_FIT_CUT`` is followed by one of
-#: GMRES on the products, to this relative residual in at most this many products.  A step is halved at most
-#: ``GRADIENT_FIT_HALVINGS`` times, then the Gauss-Newton step at most ``GRADIENT_FIT_GN_HALVINGS`` times.
-GRADIENT_FIT_STEPS, GRADIENT_FIT_RTOL, GRADIENT_FIT_PRODUCTS, GRADIENT_FIT_CUT = 30, 1e-2, 12, 0.3
-GRADIENT_FIT_HALVINGS, GRADIENT_FIT_GN_HALVINGS = 2, 6
-#: A full step that lowers the cost but enlarges the Gauss-Newton step (``J_b`` stale) re-linearizes the fit where
-#: it lands, at most this many times a fit.
-GRADIENT_FIT_REFRESHES = 3
-#: The residual-curvature memory: at most this many of the latest measured directions.
-CURVATURE_MEMORY = 64
 
 
 def _nonlinear_constraint(values, jacobian, lower, upper, scales):
@@ -70,7 +50,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     the trial's fitted boundary itself (INDATA arrays, the model's boundary coordinates), such as a
     coil-plasma clearance.  Every trial is the K = 0 boundary
     of the field and plasma parameters of ``x`` (:class:`ThreeTermsModel`), warm-started from the
-    first-order prediction of the latest linearized solution; a trial without a solution raises
+    first-order prediction of the latest linearized solution: a trial without a solution raises
     :class:`~vmex.core.errors.TrialRejected`.  A row ``h`` (loss or quantity) has the design gradient of the
     implicit function theorem of the boundary least squares,
 
@@ -79,19 +59,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     with ``r`` the interface rows, ``J_b`` their Jacobian in the model's coordinates ``b`` (boundary, and the
     bootstrap current with ``bootstrap``) and ``dr/dx`` through the plasma parameters and the field; every
     row's ``dh/db`` and plasma term come from one reverse pass through the equilibrium.  This Gauss-Newton form
-    leaves out the rows' curvature times the fit's residual, which the fit's stationarity ``F = J_b^T r = 0``
-    keeps: with ``gradient_rounds`` the gradient is instead the exact
-
-        dh/dx = dh/dx|_b - mu^T dF/dx,   mu = H^-1 dh/db,   H = dF/db,
-
-    every row's ``mu`` in one block Krylov space preconditioned by the Gauss-Newton matrix, a round adding a direction
-    per row still above the relative residual ``gradient_rtol``.  ``H v`` and ``dF/dx^T v`` come together from one-sided
-    differences of the fit cost's gradient (one tight solve and one reverse pass, no Jacobian).  With
-    ``gradient_fit_xtol`` the fit is first converged to its stationarity, by Newton steps until the column-scaled
-    Gauss-Newton step is below it, since both forms assume ``F = 0``.  With ``gradient_certify`` a trial other than the
-    accepted point is linearized when first evaluated and rejected unless its fit ends below ``gradient_certify`` times
-    ``gradient_fit_xtol`` and its Newton rows below that times ``gradient_rtol``: the line search then shortens the step
-    until the equilibrium is converged and the gradient exact.  Nothing recompiles when ``x`` changes.  ``model`` is the
+    leaves out the rows' curvature times the fit's residual.  Nothing recompiles when ``x`` changes.  ``model`` is the
     :class:`ThreeTermsModel`; :meth:`boundary_residual` and
     ``stats`` (counts of trials, failures and their reasons, boundary evaluations and linearizations) report
     progress.
@@ -100,9 +68,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
                   quantities=(), parameter_quantities=(), boundary_quantities=(), config=None, boundary_ftol=1e-3,
-                  boundary_max_nfev=40, boundary_target_cost=4.0, boundary_max_residual=None, boundary_start=None,
-                  gauge_refresh=0, gauge_max_share=None, gauge_release=False, gradient_rounds=0, gradient_rtol=1e-3,
-                  gradient_fit_xtol=None, gradient_certify=None, promote_trials=False):
+                  boundary_max_nfev=40, boundary_max_residual=None, boundary_start=None, gauge_refresh=0,
+                  gauge_release=False):
         """Solve the seed design's free boundary (that of ``x0`` on the deck ``inp``).
 
         ``boundary_start`` (a run's final WOUT, or a deck: its fitted boundary and, with ``bootstrap``, current) is
@@ -112,27 +79,15 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         labelling's reference and the quadrature plan's boundary) and resumes at its final WOUT.
 
         ``config`` (a :class:`~vmex.core.freeboundary_three_terms.ThreeTermsConfig`) sets the labelling, grid,
-        quadrature, trial tolerance and bootstrap current of the model; its fit tolerances, ``start`` and
+        quadrature and bootstrap current of the model; its fit tolerances, ``start`` and
         ``max_residual`` are the solver's, not the problem's (``boundary_max_residual`` caps the trials).  A trial's
-        boundary fit reuses the accepted point's Jacobian, stopping at a relative cost change of ``boundary_ftol`` or
-        after ``boundary_max_nfev`` evaluations, and is taken as it ends if its cost is below ``boundary_target_cost``
-        times the accepted point's (``None``: always); otherwise it is refitted with fresh Jacobians.  Fits on a
-        reused Jacobian end off the trial's own free boundary by an amount that varies from trial to trial, a noise
-        of the order of the interface residual on every value a line search compares; ``boundary_target_cost=0``
-        refits every trial with its own Jacobians.  Each gradient first re-solves its trial to
-        the deck's tolerance and polishes it with its own Jacobian.  With ``boundary_max_residual`` a fit that
+        boundary fit stops at a relative cost change of ``boundary_ftol`` or after ``boundary_max_nfev`` evaluations;
+        each gradient first polishes its trial's fit with its own Jacobian.  With ``boundary_max_residual`` a fit that
         ends with any :class:`BoundaryResidual` term above it is no solution: the trial tries its next start, or
         is rejected.  With a gauge (labelling ``"flat_arc"``), set at the seed's fit, ``gauge_refresh=K`` sets it again
-        at the accepted fit every ``K`` accepted steps (:meth:`accept_x`), and ``gauge_max_share`` whenever the gauge
-        rows' share of the accepted fit's cost exceeds it, so it follows the design: its rows vanish there, so no value
-        at the accepted point changes.  With ``gauge_release`` each of those refreshes first re-fits the accepted
-        boundary without the gauge rows (the no-label fit), so the labelling does not accumulate: the accepted point's
-        values then become the no-label fit's.  ``gradient_rounds`` (at most that many block Krylov rounds, to the relative
-        residual ``gradient_rtol``) gives the exact Newton gradient instead of the Gauss-Newton one (0);
-        ``gradient_certify`` (a factor, with both) rejects a trial whose fit or Newton rows end above that factor times
-        their tolerances.  With ``promote_trials`` every trial is evaluated as :meth:`accept_x` would leave it (its
-        gauge refresh and converged gradient included, undone if another point is asked for next), so the values
-        an optimizer compares are those it continues from.
+        at the accepted fit every ``K`` accepted steps (:meth:`accept_x`), so it follows the design: its rows vanish
+        there, so no value at the accepted point changes.  With ``gauge_release`` every trial is its fit without the
+        gauge rows (the no-label fit, continued from its fit under the gauge), so the labelling does not accumulate.
         """
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities, *boundary_quantities)
         if not all(callable(f) for f in functions) or not (plasma_from_parameters is None
@@ -145,31 +100,19 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                    plasma_from_parameters=plasma_from_parameters, scales=scales, names=names,
                    quantities=tuple(quantities), parameter_quantities=tuple(parameter_quantities),
                    boundary_quantities=tuple(boundary_quantities), boundary_ftol=boundary_ftol,
-                   boundary_max_nfev=boundary_max_nfev, boundary_target_cost=boundary_target_cost,
-                   boundary_max_residual=boundary_max_residual, boundary_start=boundary_start,
-                   gauge_refresh=gauge_refresh, gauge_max_share=gauge_max_share, gauge_release=gauge_release,
-                   gradient_rounds=gradient_rounds, gradient_rtol=gradient_rtol,
-                   gradient_fit_xtol=gradient_fit_xtol, gradient_certify=gradient_certify,
-                   promote_trials=promote_trials)
+                   boundary_max_nfev=boundary_max_nfev, boundary_max_residual=boundary_max_residual,
+                   boundary_start=boundary_start, gauge_refresh=gauge_refresh,
+                   gauge_release=gauge_release)
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
                  parameter_quantities, boundary_quantities=(), boundary_ftol, boundary_max_nfev,
-                 boundary_target_cost=4.0, boundary_max_residual=None, boundary_start=None, gauge_refresh=0,
-                 gauge_max_share=None, gauge_release=False, gradient_rounds=0, gradient_rtol=1e-3,
-                 gradient_fit_xtol=None, gradient_certify=None, promote_trials=False):
+                 boundary_max_residual=None, boundary_start=None, gauge_refresh=0,
+                 gauge_release=False):
         im = model._im
-        self.gauge_refresh, self.gauge_max_share = int(gauge_refresh), gauge_max_share
-        self.gauge_release = bool(gauge_release)
-        self.gradient_rounds, self.gradient_rtol = int(gradient_rounds), float(gradient_rtol)
-        self.gradient_fit_xtol = None if gradient_fit_xtol is None else float(gradient_fit_xtol)
-        self.gradient_certify = None if gradient_certify is None else float(gradient_certify)
-        if self.gradient_certify is not None and (self.gradient_fit_xtol is None or not self.gradient_rounds):
-            raise ValueError("gradient_certify needs gradient_fit_xtol and gradient_rounds")
-        self.promote_trials, self._provisional = bool(promote_trials), None  # (key, the state before it)
+        self.gauge_refresh, self.gauge_release = int(gauge_refresh), bool(gauge_release)
         self.model = model
         self.field = lambda x: model.gauged(field_from_parameters(x))
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
-        self.boundary_target_cost = None if boundary_target_cost is None else float(boundary_target_cost)
         self.boundary_max_residual = None if boundary_max_residual is None else float(boundary_max_residual)
         x0 = np.asarray(x0, dtype=float)
         params_at = (lambda params, x: params) if plasma_from_parameters is None else plasma_from_parameters
@@ -204,10 +147,10 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         # The derivatives are those of the forward map, params_at(params0, x), at every x.
         self._plasma_directions = jax.jit(lambda params, x: jax.vmap(lambda e: jax.jvp(
             lambda z: params_at(base, z), (x,), (e,))[1])(eye))
-        def pullback(state, mask, params, x):
+        def pullback(state, mask, params, x, bands):
             """Every row's ``ImplicitParams`` gradient, each through its own function's reverse pass only."""
             sizes = [jax.eval_shape(f, state, params, x).size for f in parts]
-            return model.pullback(parts, state, mask, params, tuple(jnp.eye(k) for k in sizes), x)
+            return model.pullback(parts, state, mask, params, tuple(jnp.eye(k) for k in sizes), x, bands=bands)
 
         self._pullback = jax.jit(pullback)
 
@@ -225,8 +168,6 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self._field_jvp = jax.jit(lambda state, params, x, dx, gauge: jax.jvp(
             lambda z: model.rows(state, params, model.gauged(field_from_parameters(z), gauge)), (x,), (dx,))[1])
         self._cache, self._rejections, self._anchor = {}, {}, {}
-        self._curvature = _CurvatureMemory(CURVATURE_MEMORY)
-        self._multipliers = None  # the last Newton gradient's mu (a column per row): the next solve's first directions
         self._start, self._start_state = None, None
         if boundary_start is not None:
             from .input import VmecInput
@@ -237,11 +178,10 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                 from .wout import read_wout
 
                 wout = read_wout(boundary_start) if isinstance(boundary_start, (str, Path)) else boundary_start
-                deck, fixed = VmecInput.from_wout(wout), model.fixed
-                if (int(deck.mpol), int(deck.ntor)) == (int(fixed.mpol), int(fixed.ntor)):
-                    self._start_state = state_from_wout(wout, inp=fixed)
-                else:  # a run saved at another resolution: its boundary only
-                    deck = deck.change_resolution(mpol=int(fixed.mpol), ntor=int(fixed.ntor))
+                deck, self._start_state = VmecInput.from_wout(wout), state_from_wout(wout, inp=model.fixed)
+            fixed = model.fixed
+            if (int(deck.mpol), int(deck.ntor)) != (int(fixed.mpol), int(fixed.ntor)):  # a start saved at another resolution
+                deck = deck.change_resolution(mpol=int(fixed.mpol), ntor=int(fixed.ntor))
             self._start = model.coordinates(deck)
         self._start_key = x0.tobytes()
         self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0, rejection_reasons={})
@@ -256,27 +196,39 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     def _count(self, name, amount=1):
         self.stats[name] = self.stats.get(name, 0) + amount
 
-    def _release_gauge(self, x):
-        """Replace ``x``'s fit (cached) by the no-label fit from it, so that ``_set_gauge`` sets the gauge there.  If
-        that fit fails the old gauge and fit stand."""
-        model, key, xj = self.model, np.asarray(x, dtype=float).tobytes(), jnp.asarray(x)
-        sol, gauge, field = self._cache[key], model._gauge, self.field(xj)
-        model._gauge, model._last_linearize, model._radius = (jnp.zeros_like(gauge[0]), gauge[1]), None, None
+    def _released(self, x, sol):
+        """The no-label fit from ``sol``, ``x``'s fit under the gauge: its record, or ``None`` where that fit fails.  Its
+        steps reuse the Jacobian ``sol`` has, else the one its fit used (the last accepted fit's).  The model is left
+        as it was."""
+        model, xj = self.model, jnp.asarray(x)
+        gauge, saved = model._gauge, [getattr(model, name) for name in self._SAVED_MODEL]
+        J = sol.get("J")
+        if J is None:
+            J = self._anchor["J_b"] if self._anchor else self._fit_jacobian(x, sol)
+        # radius 0: the steps start at 1/20 of the Gauss-Newton step, which without the gauge rows is long along the
+        # flat directions (from its full length the reused Jacobian's first steps all fail)
+        model._gauge, model._last_linearize, model._radius = (jnp.zeros_like(gauge[0]), gauge[1]), None, 0.0
+        field = self.field(xj)  # after the weights are zeroed: the field carries the gauge it is wrapped with
+        if J is not None:  # its gauge rows zero like the weights
+            J = np.array(J)[:, :model.x0.size]
+            J[model._n_interface:model._n_interface + gauge[0].shape[0]] = 0.0
         try:
-            fit = model.solve_boundary(self._params_at(xj), field, x0=sol["x"], ftol=self.boundary_ftol,
+            fit = model.solve_boundary(self._params_at(xj), field, x0=sol["x"], jacobian=J, ftol=self.boundary_ftol,
                                        max_nfev=self.boundary_max_nfev)
             fitted = self._fits(fit, field)
-            state, mask, params, _ = fit["aux"]
+            state, mask, params = fit["aux"]
             values = np.asarray(self._rows(state, params, xj)) if fitted else None
         except (VmecError, RuntimeError):
             fitted = False
+        finally:
+            for name, value in zip(self._SAVED_MODEL, saved):
+                setattr(model, name, value)
         if not fitted:
-            model._gauge = gauge
             self._count("gauge_release_failures")
-            return
+            return None
         self.stats["boundary_evaluations"] += fit["nfev"]
         self._count("gauge_releases")
-        self._cache[key] = dict(fit, state=state, mask=mask, params=params, values=values)
+        return dict(fit, state=state, mask=mask, params=params, values=values, released=True)
 
     def _set_gauge(self, x):
         """Set the model's gauge at ``x``'s fit (cached) and re-solve ``x`` from that fit under it."""
@@ -314,7 +266,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             # fixed-boundary state keeps the m=1 angle its path left it with, so the two differ at finite resolution)
             for memo in (self.model._im._LAST_SOLVE, self.model._im._LAST_REFINED):
                 memo.pop(self.model.cfg, None)
-            evaluated = self.model.evaluate(self._start, params, field, seed=self._start_state, tight=True)
+            evaluated = self.model.evaluate(self._start, params, field, seed=self._start_state)
             if evaluated is not None:
                 fit = dict(x=self._start, rows=evaluated[0], aux=evaluated[1], nfev=1)
                 if not self._fits(fit, field):
@@ -324,8 +276,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             try:
                 fit = self.model.solve_boundary(params, field, x0=start, jacobian=J, ftol=self.boundary_ftol,
                                                 max_nfev=self.boundary_max_nfev,
-                                                target_cost=self.boundary_target_cost * anchor["cost"]
-                                                if anchor and self.boundary_target_cost is not None else None)
+                                                target_cost=4 * anchor["cost"] if anchor else None)
             except (VmecError, RuntimeError):  # no equilibrium on the way: try the next start
                 continue
             if not self._fits(fit, field):
@@ -336,7 +287,15 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         if fit is None:
             return self._reject(key, "no three-term free boundary at this design point")
         self.stats["boundary_evaluations"] += fit["nfev"]
-        state, mask, params_b, _ = fit["aux"]
+        if self.gauge_release and self.model._gauge is not None and anchor:
+            # a trial is the fit it has once accepted: the no-label fit from its fit under the gauge
+            released = self._released(x, dict(fit))
+            if released is not None:
+                if not np.all(np.isfinite(released["values"])):
+                    return self._reject(key, "a row is not finite at this design point")
+                self._cache[key] = released
+                return released
+        state, mask, params_b = fit["aux"]
         try:  # rows with solves of their own (a vacuum iota, say) can fail where the boundary fit did not
             values = np.asarray(self._rows(state, params_b, jnp.asarray(x)))
         except (VmecError, RuntimeError) as error:
@@ -350,7 +309,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         """Every interface residual of ``fit`` within ``boundary_max_residual`` (when set)."""
         if self.boundary_max_residual is None:
             return True
-        state, _, params_b, _ = fit["aux"]
+        state, _, params_b = fit["aux"]
         residual = self.model.boundary_residual(state, params_b, field)
         return max(residual.normal, residual.pressure, residual.sheet_current) <= self.boundary_max_residual
 
@@ -363,355 +322,78 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
     def _record(self, x):
         x = np.asarray(self._x(x), dtype=float)
-        if self._provisional is not None and x.tobytes() != self._provisional[0]:
-            self._restore()  # the optimizer did not take the promoted trial
         sol = self._solve(x)
-        accepted = getattr(self, "accepted", None)
-        if sol is not None and not (accepted is not None and np.array_equal(x, accepted.parameters)):
-            if self.promote_trials and accepted is not None:
-                sol = self._promote_trial(x)
-            elif self.gradient_certify is not None:  # the accepted point stands
-                sol = self._certify(x, sol)
         if sol is None:
             self.metadata["holder"]["failed_trials"] += 1
             raise TrialRejected(self._rejections[x.tobytes()])
         return sol
 
-    _SAVED = ("_cache", "_rejections", "_anchor", "_start", "_start_state", "_start_key", "_multipliers")
     _SAVED_MODEL = ("_gauge", "_last_linearize", "_linearization", "_radius")
 
-    def _promote_trial(self, x):
-        """The trial ``x`` as :meth:`accept_x` leaves it, with its gradient (``None``: rejected); the state before it
-        is kept until the trial is accepted or another point is asked for."""
-        key = x.tobytes()
-        if self._provisional is not None:
-            return self._cache[key]
-        curvature = self._curvature
-        self._provisional = (key, [getattr(self, name) for name in self._SAVED],
-                             [getattr(self.model, name) for name in self._SAVED_MODEL], (curvature.D, curvature.ED))
-        try:
-            self._promote(x)
-            sol = self._certify(x, self._cache[key])
-            reason = None if sol is not None else self._rejections[key]
-        except TrialRejected as error:  # its fit does not tighten
-            sol, reason = None, str(error)
-        if sol is None:
-            self._restore()
-            self._cache[key], self._rejections[key] = None, reason
-        return sol
-
-    def _restore(self):
-        """Undo :meth:`_promote_trial`; its trial is solved again if asked for."""
-        key, saved, model, (self._curvature.D, self._curvature.ED) = self._provisional
-        for name, value in zip(self._SAVED, saved):
-            setattr(self, name, value)
-        for name, value in zip(self._SAVED_MODEL, model):
-            setattr(self.model, name, value)
-        self._cache.pop(key, None)
-        self._provisional = None
-
-    def _certify(self, x, sol):
-        """``sol`` with its gradient, or ``None`` (rejected) where its fit step or a Newton row's relative residual ends
-        above ``gradient_certify`` (when set) times its tolerance, or the Newton terms fall back to Gauss-Newton."""
-        if "gradients" in sol:
-            return sol
-        anchor, fallbacks = self._anchor, self.stats.get("newton_fallbacks", 0)
-        for name in ("fit_step", "newton_residual"):
-            self.stats.pop(name, None)
-        try:
-            self._linearize(x, sol)
-        except TrialRejected as error:
-            reason = str(error)
-        else:
-            fit, newton = self.stats.get("fit_step", np.inf), self.stats.get("newton_residual", np.inf)
-            factor = self.gradient_certify
-            if factor is None or (fit <= factor * self.gradient_fit_xtol and newton <= factor * self.gradient_rtol
-                                  and self.stats.get("newton_fallbacks", 0) == fallbacks):
-                return sol
-            reason = f"uncertified gradient: fit step {fit:.1e}, Newton residual {newton:.1e}"
-        self._anchor = anchor  # the next trials start from the last certified linearization
-        return self._reject(x.tobytes(), reason)
-
     def _fit_jacobian(self, x, sol):
-        """``sol``'s Jacobian (cached until its gradients are) once it is re-solved tight and its fit polished or
-        converged.
+        """``sol``'s Jacobian (cached until its gradients are) once its fit is polished.
 
-        The record's values become those of the tight (or polished) state, so a value asked for after its gradient is
-        that state's."""
+        The record's values become those of the polished state, so a value asked for after its gradient is that
+        state's."""
         if "J" in sol:
-            if "fit_step" in sol:  # the step its fit converged to, for a certification that follows
-                self.stats["fit_step"] = sol["fit_step"]
             return sol["J"]
         model, xj = self.model, jnp.asarray(x)
         field, nb = self.field(xj), model.x0.size
 
-        def tight():
+        def linearized():
             extra = self._plasma_directions(sol["params"], xj) if self._plasma.size else None
             try:
                 J, _, _, aux = model.linearize(sol["x"], sol["aux"], field, extra=extra)
-            except RuntimeError as error:  # the trial's state does not tighten to the deck's tolerance
+            except RuntimeError as error:  # no linearization at this state
                 raise TrialRejected(str(error)) from error
-            state, mask, params, _ = aux
+            state, mask, params = aux
             sol.update(aux=aux, state=state, mask=mask, params=params,
                        rows=np.asarray(model._rows(state, params, field)),
                        values=np.asarray(self._rows(state, params, xj)))
             self.stats["linearizations"] += 1
             return J
 
-        J = tight()
-        try:  # the converged fit's Newton steps replace the polish
-            polished = None if self.gradient_fit_xtol is not None else model.solve_boundary(
+        J = linearized()
+        try:
+            polished = model.solve_boundary(
                 self._params_at(xj), field, x0=sol["x"], jacobian=J[:, :nb], ftol=GRADIENT_POLISH_FTOL,
                 max_nfev=GRADIENT_POLISH_NFEV)
-        except (VmecError, RuntimeError):  # no polish: the tightened fit's own Jacobian stands
+        except (VmecError, RuntimeError):  # no polish: the fit's own Jacobian stands
             polished = None
         if polished is not None:
             self.stats["boundary_evaluations"] += polished["nfev"]
             if polished["rows"] @ polished["rows"] < GRADIENT_POLISH_KEEP * sol["rows"] @ sol["rows"]:
                 sol.update(x=polished["x"], aux=polished["aux"])
-                J = tight()
-        J_fit = None if self.gradient_fit_xtol is None else self._converge_fit(sol, J[:, :nb], xj, field)
-        if J_fit is not None:
-            J = np.hstack([J_fit, J[:, nb:]])
-            if self.gradient_rounds:  # the Newton terms' products are exact: the Jacobian only preconditions them
-                state, mask, params, _ = sol["aux"]
-                sol.update(state=state, mask=mask, params=params, rows=np.asarray(model._rows(state, params, field)),
-                           values=np.asarray(self._rows(state, params, xj)))
-            else:
-                J = tight()
+                J = linearized()
         sol["J"] = J
         return J
 
     def _linearize(self, x, sol):
-        """Every row's design gradient at ``sol`` (cached), at its tight, converged fit (``_fit_jacobian``)."""
+        """Every row's design gradient at ``sol`` (cached), at its polished fit (``_fit_jacobian``)."""
         if "gradients" in sol:
             return sol["gradients"]
         model, xj = self.model, jnp.asarray(x)
-        field, nb = self.field(xj), model.x0.size
+        nb = model.x0.size
         J = self._fit_jacobian(x, sol)
         J_b, J_p = J[:, :nb], J[:, nb:]
         state, params = sol["state"], sol["params"]
-        params_bar = self._pullback(state, sol["mask"], params, xj)
+        params_bar = self._pullback(state, sol["mask"], params, xj, model.stored_bands(params, state, sol["mask"]))
         G_b, G_x = map(np.asarray, self._coordinates(params, jnp.asarray(sol["x"]), xj, params_bar))
         S = model.gauge_curvature(sol["x"], params)
         gradients = np.asarray(self._direct(state, params, xj)) + G_x
-        newton = self._newton_terms(sol, J_b, J_p, S, G_b, xj, field) if self.gradient_rounds else None
-        if newton is not None:
-            gradients -= newton
-        else:
-            if S is None:
-                Q, R = np.linalg.qr(J_b)
-                lam = Q @ np.linalg.solve(R.T, G_b.T)  # residual-space multipliers, a column per row
-            else:  # nonlinear gauge rows: J^T J + sum g Hess g (their curvature; not the interface rows')
-                lam = J_b @ np.linalg.solve(J_b.T @ J_b + S, G_b.T)
-            gradients -= np.stack([np.asarray(self._field_vjp(state, params, xj, jnp.asarray(column), model._gauge))
-                                   for column in lam.T])
-            gradients[:, self._plasma] -= lam.T @ J_p
+        if S is None:
+            Q, R = np.linalg.qr(J_b)
+            lam = Q @ np.linalg.solve(R.T, G_b.T)  # residual-space multipliers, a column per row
+        else:  # nonlinear gauge rows: J^T J + sum g Hess g (their curvature; not the interface rows')
+            lam = J_b @ np.linalg.solve(J_b.T @ J_b + S, G_b.T)
+        gradients -= np.stack([np.asarray(self._field_vjp(state, params, xj, jnp.asarray(column), model._gauge))
+                               for column in lam.T])
+        gradients[:, self._plasma] -= lam.T @ J_p
         self._anchor = dict(x=np.asarray(x, dtype=float).copy(), b=sol["x"], J_b=J_b, J_p=J_p, state=state,
                             params=params, cost=0.5 * sol["rows"] @ sol["rows"])
         sol["gradients"] = gradients
         sol.pop("J", None)
         return gradients
-
-    def _cost_gradient(self, z, params0, field, xj, *, design=True, near=None):
-        """The fit cost's gradient in ``b`` and (``design``) in ``x`` at boundary ``z`` of the design ``xj``, and
-        the rows and state there; ``None`` when ``z`` has no tight solution.  ``near`` ``(b, got)``: a solved
-        neighbour (an earlier return at ``b``) that seeds the solve."""
-        model = self.model
-        near = None if near is None else (near[0], *near[1][3][:2])
-        got = model.evaluate(z, params0, field, tight=True, near=near)
-        if got is None:
-            return None
-        r, aux = got
-        state, mask, params, _ = aux
-        bar = jax.tree.map(lambda a: a[None], model.rows_pullback(state, mask, params, field, r))
-        g_b, g_p = self._coordinates(params, jnp.asarray(z), xj, bar)
-        g_x = None
-        if design:
-            g_x = np.asarray(self._field_vjp(state, params, xj, jnp.asarray(r), model._gauge)) + np.asarray(g_p[0])
-        return np.asarray(g_b[0]), g_x, np.asarray(r), aux
-
-    def _fit_metric(self, J_b, S):
-        """The column norms of ``J_b`` and the column-scaled Gauss-Newton matrix ``P = J_b^T J_b + S``."""
-        norms = np.linalg.norm(J_b, axis=0)
-        norms[norms == 0.0] = 1.0
-        P = (J_b / norms).T @ (J_b / norms)
-        return norms, P if S is None else P + S / norms[:, None] / norms[None, :]
-
-    def _model_factor(self, P, norms):
-        """The Cholesky factor of ``P`` plus the curvature memory's model; of ``P`` alone (the memory dropped) where
-        that is not positive definite."""
-        W = self._curvature.model(norms)
-        if W is not None:
-            try:
-                return scipy.linalg.cho_factor(P + W)
-            except np.linalg.LinAlgError:
-                self._curvature.clear()
-                self._count("curvature_resets")
-        return scipy.linalg.cho_factor(P)
-
-    def _products(self, cost_gradient, b, base, block, norms, P):
-        """``H v`` (column-scaled) and ``dF/dx^T v`` (``None`` without the design part) of the columns ``v`` of
-        ``block``: differences of the fit cost's gradient at ``b`` (``base`` there), added to the curvature memory.
-        ``None`` when a side has no tight solution."""
-        eps, HB, FB = NEWTON_GRADIENT_EPS, [], []
-        for v in block.T:
-            plus = cost_gradient(b + eps * v / norms, near=(b, base))
-            if plus is None:
-                return None
-            HB.append((plus[0] - base[0]) / eps / norms)
-            FB.append(None if plus[1] is None else (plus[1] - base[1]) / eps)
-        HB = np.stack(HB, axis=1)
-        self._curvature.add(block / norms[:, None], (HB - P @ block) * norms[:, None])
-        return HB, None if FB[0] is None else np.stack(FB, axis=1)
-
-    def _converge_fit(self, sol, J_b, xj, field):
-        """Newton steps on the fit ``sol`` (in place) until the Gauss-Newton step ``P^-1 F`` (column-scaled,
-        ``P = J_b^T J_b + S``, ``F`` the fit cost's gradient by one reverse pass) is below ``gradient_fit_xtol``.  A
-        step solves with ``P`` plus the curvature memory's model of the residual curvature ``H - P`` and adds its
-        secant pair to the memory; after one that cuts the Gauss-Newton step by less than ``GRADIENT_FIT_CUT`` the
-        next is GMRES on difference products ``H v``, preconditioned by that model.  Each step is backtracked until it
-        lowers the cost without enlarging the Gauss-Newton step (or, at the solves' noise, halves that step), the
-        Gauss-Newton step where it does not.  A full step that lowers the cost but enlarges the Gauss-Newton step
-        re-linearizes ``J_b`` where the step lands (at most ``GRADIENT_FIT_REFRESHES`` times) and drops the memory.
-        The latest ``J_b`` when ``sol`` moved, else ``None``."""
-        from scipy.sparse.linalg import LinearOperator, gmres
-
-        b = np.asarray(sol["x"], dtype=float)
-        norms, P = self._fit_metric(J_b, self.model.gauge_curvature(b, sol["params"]))
-        factor = scipy.linalg.cho_factor(P)
-        params0 = self._params_at(xj)
-        cost_gradient = lambda z, near=None: self._cost_gradient(z, params0, field, xj, design=False,  # noqa: E731
-                                                                 near=near)
-        got = cost_gradient(b)
-        if got is None:
-            return None
-        moved, size, steps, products, exact, n, refreshes = False, np.inf, 0, [0], False, b.size, 0
-
-        def hvp(v):
-            out = self._products(cost_gradient, b, base, np.reshape(v, (-1, 1)), norms, P)
-            if out is None:
-                raise RuntimeError("no tight solution beside the fit")
-            products[0] += 1
-            return out[0][:, 0]
-
-        while steps < GRADIENT_FIT_STEPS:
-            g_b, _, r, _ = base = got
-            F = g_b / norms
-            gn = -scipy.linalg.cho_solve(factor, F)
-            last, size = size, float(np.linalg.norm(gn))
-            if size < self.gradient_fit_xtol:
-                break
-            exact = moved and not exact and size > GRADIENT_FIT_CUT * last
-            curvature = self._model_factor(P, norms)
-            du = -scipy.linalg.cho_solve(curvature, F)
-            if exact:
-                precondition = LinearOperator((n, n), matvec=lambda v: scipy.linalg.cho_solve(curvature, np.ravel(v)))
-                try:
-                    du, _ = gmres(LinearOperator((n, n), matvec=hvp), -F, x0=du, rtol=GRADIENT_FIT_RTOL,
-                                  M=precondition,
-                                  restart=GRADIENT_FIT_PRODUCTS, maxiter=1)
-                except RuntimeError:
-                    pass
-            directions = [(gn, GRADIENT_FIT_GN_HALVINGS)]
-            if not np.array_equal(du, gn):
-                directions.insert(0, (du, GRADIENT_FIT_HALVINGS))
-            s, trial, stale, tries = self._backtrack(cost_gradient, b, base, directions, factor, norms, size)
-            steps += tries
-            if s is None:
-                break
-            if np.linalg.norm(s) >= NEWTON_GRADIENT_EPS:  # the step's secant pair: (H - P) s ~ F(b + s) - F - P s
-                self._curvature.add((s / norms)[:, None], ((trial[0] / norms - F - P @ s) * norms)[:, None])
-            b, got, moved = b + s / norms, trial, True
-            if stale and refreshes < GRADIENT_FIT_REFRESHES:
-                try:
-                    J_b = np.asarray(self.model.linearize(b, got[3], field)[0])[:, :n]
-                except RuntimeError:
-                    continue
-                refreshes += 1
-                norms, P = self._fit_metric(J_b, self.model.gauge_curvature(b, got[3][2]))
-                factor = scipy.linalg.cho_factor(P)
-                size = float(np.linalg.norm(scipy.linalg.cho_solve(factor, got[0] / norms)))
-                exact = True  # the next step is the model's (now plain Gauss-Newton), not GMRES
-                self._curvature.clear()
-        self._count("fit_steps", steps)
-        self._count("fit_products", products[0])
-        self._count("fit_linearizations", refreshes)
-        self.stats["fit_step"] = sol["fit_step"] = size
-        if moved:
-            sol.update(x=b, aux=got[3])
-        return J_b if moved else None
-
-    def _backtrack(self, cost_gradient, b, base, directions, factor, norms, size):
-        """The first acceptable step of ``directions`` (``(step, halvings)`` pairs in order) from the fit ``b``: one
-        that lowers the cost without enlarging the Gauss-Newton step of size ``size``, or (at the solves' noise) halves that
-        step.  Returns ``(step, trial, stale, tries)``, ``step`` ``None`` when none is; ``stale``: a full step lowered
-        the cost but enlarged the Gauss-Newton step, so the Jacobian behind ``factor`` no longer describes the fit."""
-        cost, stale, tries = base[2] @ base[2], False, 0
-        for direction, halvings in directions:
-            for t in 0.5 ** np.arange(halvings + 1):
-                trial = cost_gradient(b + t * direction / norms, near=(b, base))
-                tries += 1
-                if trial is None:
-                    continue
-                new = float(np.linalg.norm(scipy.linalg.cho_solve(factor, trial[0] / norms)))
-                lower = trial[2] @ trial[2] <= cost * (1 + 1e-12)
-                if new < 0.5 * size or (new <= size and lower):
-                    return t * direction, trial, stale, tries
-                stale = stale or (t == 1.0 and lower)
-        return None, None, stale, tries
-
-    def _newton_terms(self, sol, J_b, J_p, S, G_b, xj, field):
-        """``mu^T dF/dx`` of every row (a row each) at the fit ``sol``, ``F = J_b^T r`` and ``mu = H^-1 dh/db``:
-        block Krylov rounds (least residual) preconditioned by ``P = J_b^T J_b + S`` (column-scaled) plus the
-        curvature memory's model and started from the last solve's ``mu``, until every row's relative residual is below
-        ``gradient_rtol``, only the rows above it adding directions; each new direction's ``H v`` and ``dF/dx^T v`` by differences of the fit cost's
-        gradient.  The soft directions (:data:`SOFT_DIRECTION_TOL`) are left out of that space and solved by
-        Gauss-Newton.  ``None`` (the Gauss-Newton gradient stands) when a perturbed fit has no tight solution."""
-        b, nb = np.asarray(sol["x"], dtype=float), J_b.shape[1]
-        norms, P = self._fit_metric(J_b, S)
-        g = (G_b / norms).T
-        eigenvalues, eigenvectors = scipy.linalg.eigh(P)
-        soft = eigenvalues < SOFT_DIRECTION_TOL * eigenvalues[-1]
-        U = eigenvectors[:, soft]
-        self.stats["soft_directions"] = int(np.sum(soft))
-        size = np.maximum(np.linalg.norm(g, axis=0), 1e-300)
-        lam = (J_b / norms) @ U @ (U.T @ g / eigenvalues[soft][:, None])  # residual-space multipliers, a column per row
-        g = g - U @ (U.T @ g)
-        params0 = self._params_at(xj)
-        cost_gradient = lambda z, near=None: self._cost_gradient(z, params0, field, xj, near=near)  # noqa: E731
-        base = cost_gradient(b)
-        curvature = self._model_factor(P, norms)
-        V, HV, FX = np.zeros((nb, 0)), np.zeros((nb, 0)), np.zeros((xj.size, 0))
-        block = scipy.linalg.cho_solve(curvature, g) if self._multipliers is None else self._multipliers * norms[:, None]
-        for _ in range(self.gradient_rounds):
-            block = block - U @ (U.T @ block)
-            block = block - V @ (V.T @ block)
-            u, sv, _ = np.linalg.svd(block, full_matrices=False)
-            block = u[:, sv > 1e-6 * sv[0]]
-            got = None if base is None else self._products(cost_gradient, b, base, block, norms, P)
-            if got is None:
-                self._count("newton_fallbacks")
-                return None
-            self._count("newton_products", block.shape[1])
-            V, HV, FX = np.hstack([V, block]), np.hstack([HV, got[0] - U @ (U.T @ got[0])]), np.hstack([FX, got[1]])
-            # least residual, never worse round to round; directions below the products' accuracy left out
-            coefficients = np.linalg.lstsq(HV, g, rcond=1e-6)[0]
-            R = HV @ coefficients - g
-            residuals = np.linalg.norm(R, axis=0) / size
-            if residuals.max() <= self.gradient_rtol:
-                break
-            open_ = residuals > self.gradient_rtol  # rows still above it add the next directions
-            block = scipy.linalg.cho_solve(curvature, R[:, open_])
-        self.stats["newton_residual"] = float(residuals.max())
-        self._multipliers = V @ coefficients / norms[:, None]
-        terms = (FX @ coefficients).T
-        if soft.any():
-            state, params = sol["state"], sol["params"]
-            terms = terms + np.stack([np.asarray(self._field_vjp(state, params, xj, jnp.asarray(column), self.model._gauge))
-                                      for column in lam.T])
-            terms[:, self._plasma] += lam.T @ J_p
-        return terms
 
     def _value(self, x):
         return float(self._record(x)["values"][0])
@@ -734,31 +416,26 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         return _nonlinear_constraint(self.constraint_values, self.constraint_jac, lower, upper, scales)
 
     def accept_x(self, x):
-        """Promote an evaluated point after the optimizer accepts it; drop the other trials."""
+        """Promote an evaluated point after the optimizer accepts it; drop the other trials.  Returns whether the
+        promotion re-fitted the point (a gauge release), so that its values moved."""
         x = np.asarray(self._x(x), dtype=float)
         key = x.tobytes()
-        if self._provisional is None or self._provisional[0] != key:
-            if self._provisional is not None:
-                self._restore()
-            if self._cache.get(key) is None:
-                raise ValueError("evaluate the candidate before accepting it")
-            self._promote(x)
-        self._provisional = None
+        if self._cache.get(key) is None:
+            raise ValueError("evaluate the candidate before accepting it")
+        releases = self.stats.get("gauge_releases", 0)
+        self._promote(x)
         self.accepted, self.accepted_step = _AcceptedPoint(x.copy()), self.accepted_step + 1
         self._cache = {key: self._cache[key]}
+        return self.stats.get("gauge_releases", 0) > releases
 
     def _promote(self, x):
         """Refresh the gauge at ``x``'s fit (cached) where the next accepted step is due one."""
         sol = self._cache[x.tobytes()]
-        reset = self.model._gauge is not None and bool(
-            self.gauge_refresh and (self.accepted_step + 1) % self.gauge_refresh == 0)
-        if self.model._gauge is not None and not reset and self.gauge_max_share is not None:
-            if "gradients" not in sol:  # the share is the converged fit's; the gradient follows the gauge decision
-                self._fit_jacobian(x, sol)
-            reset = self.gauge_share(x) > self.gauge_max_share
-        if reset:
-            if self.gauge_release:
-                self._release_gauge(x)
+        if self.model._gauge is not None and self.gauge_refresh and (self.accepted_step + 1) % self.gauge_refresh == 0:
+            if self.gauge_release and not sol.get("released"):  # a trial is released when it is solved
+                released = self._released(x, sol)
+                if released is not None:
+                    self._cache[x.tobytes()] = released
             self._set_gauge(x)
 
     def gauge_share(self, x):
@@ -805,44 +482,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
     def close(self):
         """Drop the cached trials but the accepted one."""
-        if self._provisional is not None:
-            self._restore()
         key = self.accepted.parameters.tobytes()
         self._cache = {k: v for k, v in self._cache.items() if k == key}
-
-
-class _CurvatureMemory:
-    """The fit's residual curvature ``E = H - J_b^T J_b - S`` (``H`` the fit cost's Hessian) along the latest measured
-    boundary directions, carried from fit to fit: a symmetric model of ``E`` exact on their span."""
-
-    def __init__(self, size):
-        self.size, self.D, self.ED = int(size), None, None
-
-    def clear(self):
-        self.D, self.ED = None, None
-
-    def add(self, D, ED):
-        """Directions ``D`` (columns, model coordinates) and ``E D``."""
-        self.D = D if self.D is None else np.hstack([self.D, D])[:, -self.size:]
-        self.ED = ED if self.ED is None else np.hstack([self.ED, ED])[:, -self.size:]
-
-    def model(self, norms):
-        """``Y Q^T + Q Y^T - Q (Q^T Y) Q^T`` in the coordinates scaled by ``norms``, ``Q`` an orthonormal basis of the
-        directions and ``Y = E Q``; ``None`` while empty."""
-        if self.D is None:
-            return None
-        M = self.D * norms[:, None]
-        if not np.all(np.isfinite(M)):  # a non-finite direction: drop the memory rather than fail
-            self.clear()
-            return None
-        try:
-            u, sv, vt = np.linalg.svd(M, full_matrices=False)
-        except np.linalg.LinAlgError:  # LAPACK's divide-and-conquer driver can fail to converge; gesvd does not
-            u, sv, vt = scipy.linalg.svd(M, full_matrices=False, lapack_driver="gesvd")
-        keep = sv > 1e-3 * sv[0]
-        Q, Y = u[:, keep], (self.ED / norms[:, None]) @ vt[keep].T / sv[keep]
-        A = Q.T @ Y
-        return Y @ Q.T + Q @ Y.T - Q @ (0.5 * (A + A.T)) @ Q.T
 
 
 @dataclass(frozen=True)

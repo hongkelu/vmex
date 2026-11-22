@@ -263,7 +263,11 @@ def test_boundary_gradient_liveness():
         return term.total_state(solution.state, solution.runtime)
 
     base = float(np.asarray(jax.grad(objective)(params).rbc)[index])
-    step = 1.0e-4
+    # Within the breakpoints of the discretized Gamma_c: on the held-m=1
+    # equilibrium the central difference reads -0.071, +0.44, -0.22, -0.19 at
+    # h = 1e-4, 3e-5, 1e-5, 3e-6 against AD -0.230, while the solved state's
+    # own derivative (mean iota) agrees with FD to 1e-9 at every one of them.
+    step = 1.0e-5
     values = [
         float(objective(dataclasses.replace(
             params, rbc=jnp.asarray(params.rbc).at[index].add(sign * step))))
@@ -362,7 +366,7 @@ def test_smooth_boundary_gradient_is_fd_consistent():
     base = float(np.asarray(jax.grad(
         lambda p: _smooth_ladder_objective(inp, p, 7, 3, 64, 24)
     )(params).rbc)[index])
-    step = 1.0e-4
+    step = 1.0e-5  # h = 1e-3/1e-4/1e-5: FD -0.069/-0.042/-0.091 against AD -0.089
     values = [
         float(_smooth_ladder_objective(inp, dataclasses.replace(
             params, rbc=jnp.asarray(params.rbc).at[index].add(sign * step)),
@@ -590,3 +594,10 @@ def test_wout_row_map_preserves_values_and_directional_derivatives(lasym):
         for name in original:
             np.testing.assert_array_equal(np.isnan(original[name]), np.isnan(mapped[name]))
             np.testing.assert_allclose(original[name], mapped[name], rtol=2e-10, atol=2e-11)
+
+
+def test_default_well_slots_cover_rippled_surfaces():
+    """32 slots per transit, never above the interval count; 16 overflowed on the QI seed deck's outer surfaces."""
+    assert gammac._default_max_wells(4, 64) == 128
+    assert gammac._default_max_wells(4, 16) == 64
+    assert gammac._default_max_wells(1, 16) == 16

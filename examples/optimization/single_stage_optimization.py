@@ -30,7 +30,8 @@ you intend to modify.
 
 Measured end to end at commit 2072cadaa on an Apple M3 Max laptop, with a cold
 JAX cache and a load average near 10: 129 s, of which 65 s is JAX compilation.
-It takes 12 L-BFGS-B iterations and 21 trials, and every target is met. The coil
+It takes 12 L-BFGS-B iterations and 15 trials (one rejected by the equilibrium
+solve), and every target is met. The coil
 pre-fit moves the coils up to 0.46 m from their circles. The joint optimization
 then raises the minimum |iota| from 0.404 to 0.429, and moves the boundary by up
 to 9 mm and the coils by up to 7 mm.
@@ -58,6 +59,10 @@ from essos.fields import BiotSavart
 from essos.objective_functions import loss_coil_separation, loss_coil_surface_distance
 from essos.surfaces import surfacerzfourier_from_boundary
 
+# "QA" shapes an nfp=2 boundary from a minimal seed; "QH" starts from the
+# Landreman-Paul precise-QH deck scaled to R0 = 1 (limits set further down).
+FAMILY = "QA"
+HELICITY_N = 0
 # Number of field periods, and the seed deck the boundary is shaped from:
 NFP = 2
 INPUT_FILE = Path(__file__).resolve().parents[1] / "data" / f"input.minimal_seed_nfp{NFP}"
@@ -116,15 +121,33 @@ CONSTRAINT_WEIGHT = 1.0e3
 # the seed solve converges on; L-BFGS-B rather than BFGS because BFGS cannot
 # represent a bound.
 PARAMETER_BOUND = 3.0
+# Cost of a trial without a certified equilibrium, in units of the seed cost:
+REJECTED_TRIAL_COST = 10.0
 
 # Budgets. One trial is one equilibrium solve plus one adjoint. The script's
 # own end-of-run check passes at iterations 6, 8, 10, 12, 15 and 20 (measured),
-# and 12 iterations took 21 trials. Past that point the run only trades a little
+# and 12 iterations took 15 trials. Past that point the run only trades a little
 # quasisymmetry, so raise MAXITER to go further. The trial cap only stops a run
 # whose line searches go astray.
 MAXITER = 12
 MAX_TRIALS = 30
 COIL_FIT_MAXITER = 200            # coil-only pre-fit, no equilibrium solves
+# Quasisymmetry weight of each stage; every stage restarts L-BFGS-B from the
+# last one's point, with MAXITER iterations and MAX_TRIALS trials of its own.
+QS_WEIGHTS = [1.0]
+
+if FAMILY == "QH":
+    NFP, HELICITY_N = 4, -1
+    INPUT_FILE = INPUT_FILE.with_name("input.LandremanPaul2021_QH_reactorScale_lowres")
+    IOTA_FLOOR, ASPECT_LIMIT, CURVATURE_LIMIT = 1.0, 8.2, 10.0
+    COIL_SURFACE_DISTANCE_LIMIT, COIL_DISTANCE_LIMIT = 0.08, 0.10
+    IOTA_CONSTRAINT, ASPECT_CONSTRAINT, CURVATURE_OBJECTIVE_LIMIT = 1.05, 8.1, 9.5
+    COIL_DISTANCE_CONSTRAINT, COIL_SURFACE_DISTANCE_CONSTRAINT = 0.12, 0.09
+    N_COILS, COIL_ORDER, N_SEGMENTS, COIL_MINOR_RADIUS, COIL_FIT_MAXITER = 4, 6, 96, 0.3, 800
+    # At weight 1 the penalties trade the seed's quasisymmetry away (QH residual
+    # 4.3e-4 -> 7e-3); weight 1e3 then 1e4 with hinge weight 1e2 ends at 4.5e-4
+    # with every target met (measured: 84 trials, 29 min on 16 Xeon cores).
+    QS_WEIGHTS, CONSTRAINT_WEIGHT, MAXITER, MAX_TRIALS = [1.0e3, 1.0e4], 1.0e2, 20, 40
 
 # Surface grid the coil objective uses. A toroidal count commensurate with the
 # coil number aliases narrow B.n/B structure, so 37 rather than 36.
@@ -156,18 +179,29 @@ started = time.perf_counter()
 # VmecInput is frozen, so copy its arrays before shaping the seed boundary.
 inp = vj.VmecInput.from_file(INPUT_FILE)
 rbc, zbs = inp.rbc.copy(), inp.zbs.copy()
-rbc[inp.ntor, 1] = zbs[inp.ntor, 1] = SEED_MINOR_RADIUS
-rbc[inp.ntor + 1, 1], zbs[inp.ntor + 1, 1] = SEED_ELLIPSE, -SEED_ELLIPSE
+if FAMILY == "QH":  # the reactor-scale vacuum deck at R0 = 1
+    r0 = rbc[inp.ntor, 0]
+    rbc, zbs = rbc / r0, zbs / r0
+    inp = replace(inp, phiedge=inp.phiedge / r0**2, pres_scale=0.0)
+else:
+    rbc[inp.ntor, 1] = zbs[inp.ntor, 1] = SEED_MINOR_RADIUS
+    rbc[inp.ntor + 1, 1], zbs[inp.ntor + 1, 1] = SEED_ELLIPSE, -SEED_ELLIPSE
 mpol = max(MAX_MODE + 2, 5)
 inp = replace(inp, rbc=rbc, zbs=zbs, delt=0.5).change_resolution(
     mpol=mpol, ntor=mpol, ntheta=2 * mpol + 6, nzeta=2 * mpol + 4)
 
 # A VmecProblem owns the boundary-mode convention, the dof scaling and the
 # equilibrium solve. Quasisymmetry is its objective; the limits are added below.
-qs = opt.QuasisymmetryRatioResidual(SURFACES, helicity_m=1, helicity_n=0)
-plasma_problem = opt.VmecProblem.from_tuples(
-    inp, [(qs.residuals_state, 0.0, 1.0)], max_mode=MAX_MODE,
-    use_ess=True, progress=not ci_smoke)
+qs = opt.QuasisymmetryRatioResidual(SURFACES, helicity_m=1, helicity_n=HELICITY_N)
+
+
+def make_plasma_problem(weight):
+    return opt.VmecProblem.from_tuples(
+        inp, [(qs.residuals_state, 0.0, weight)], max_mode=MAX_MODE,
+        use_ess=True, progress=not ci_smoke)
+
+
+plasma_problem = make_plasma_problem(QS_WEIGHTS[0])
 
 ###############################################################################
 ### Set up the coils ##########################################################
@@ -267,20 +301,37 @@ coil_value_and_grad = jax.jit(jax.value_and_grad(coil_objective, has_aux=True))
 # The monitor prints one row per evaluation and records the history for the
 # plot and the movie at the end.
 monitor = opt.OptimizationMonitor(plasma_problem)
-counts, cached = {"trials": 0}, {}
+counts, cached = {"trials": 0, "rejected": 0}, {}
 COIL_TERMS = ("coil length", "coil curvature", "coil separation", "coil-surface separation")
 
 
 def value_and_grad(u):
-    """What SciPy calls: the two halves evaluated once and added."""
+    """What SciPy calls: the two halves evaluated once and added.
+
+    A trial without a certified equilibrium comes back with zero residual rows,
+    and its built-in rejection cost is sized for the quasisymmetry terms alone,
+    far below the seed cost, so a line search would accept it. It gets
+    REJECTED_TRIAL_COST * seed cost * (1 + |u|)^2 instead, with its exact
+    gradient: above every accepted value, so it is never accepted.
+    """
     u = np.asarray(u, dtype=float)
     if cached.get("key") == u.tobytes():          # SciPy re-asks at the same point
         return cached["value"], cached["gradient"].copy()
     counts["trials"] += 1
     (plasma_value, (qs_rows, plasma_penalty)), plasma_gradient = \
         plasma_value_and_grad(jnp.asarray(u))
-    (coil_value, coil_costs), coil_gradient = coil_value_and_grad(jnp.asarray(u))
     qs_rows = np.asarray(qs_rows)
+    if not np.any(qs_rows) and "seed cost" in cached:
+        counts["rejected"] += 1
+        distance = float(np.linalg.norm(u))
+        value = REJECTED_TRIAL_COST * cached["seed cost"] * (1.0 + distance) ** 2
+        gradient = 2.0 * REJECTED_TRIAL_COST * cached["seed cost"] * (1.0 + distance) \
+            * u / max(distance, 1e-300)
+        print(f"  trial {counts['trials']}: no certified equilibrium, rejected", flush=True)
+        cached.update(key=u.tobytes(), value=value, gradient=gradient)
+        return value, gradient.copy()
+    (coil_value, coil_costs), coil_gradient = coil_value_and_grad(jnp.asarray(u))
+    cached.setdefault("seed cost", float(plasma_value + coil_value))
     terms = {"quasisymmetry": 0.5 * float(qs_rows @ qs_rows),
              "iota and aspect penalty": float(np.asarray(plasma_penalty)[0])}
     terms.update(zip(COIL_TERMS, map(float, np.asarray(coil_costs))))
@@ -321,17 +372,26 @@ surface_seed, coils_fit = objects_from_x(jnp.asarray(x0 + scales * coil_fit.x))
 print(f"[coil fit] {coil_fit.nit} L-BFGS-B iterations, no equilibrium solves: B.n/B RMS "
       f"= {100 * float(normal_field_rms(coils_fit, surface_seed)):.3f}% on the seed")
 
-u = coil_fit.x
-vj.FunctionProblem.from_functions(u, value_and_grad=value_and_grad).compile_value_and_gradient(
-    report_interval=10.0)
-initial_value = monitor.records[0].cost
-result = minimize(value_and_grad, u, jac=True, method="L-BFGS-B", callback=monitor,
-                  bounds=[(-PARAMETER_BOUND, PARAMETER_BOUND)] * x0.size,
-                  options={"maxiter": MAXITER, "maxfun": MAX_TRIALS, "maxcor": 20,
-                           "maxls": 20, "ftol": 1e-12, "gtol": 1e-8})
-u, final_value = result.x, float(result.fun)
-print(f"[solve] {result.nit} L-BFGS-B iterations, {counts['trials']} trials, "
-      f"status {result.status}: {result.message}", flush=True)
+u, iterations = coil_fit.x, 0
+for stage, weight in enumerate(QS_WEIGHTS):
+    if stage:  # same variables, new weight: rebuild the problem and its compiled objective
+        plasma_problem = make_plasma_problem(weight)
+        plasma_value_and_grad = jax.jit(jax.value_and_grad(plasma_objective, has_aux=True))
+        monitor = opt.OptimizationMonitor(plasma_problem)
+        cached.clear()
+    print(f"[stage {stage}] quasisymmetry weight {weight:g}", flush=True)
+    vj.FunctionProblem.from_functions(u, value_and_grad=value_and_grad).compile_value_and_gradient(
+        report_interval=10.0)
+    if not stage:
+        initial_value = monitor.records[0].cost
+    result = minimize(value_and_grad, u, jac=True, method="L-BFGS-B", callback=monitor,
+                      bounds=[(-PARAMETER_BOUND, PARAMETER_BOUND)] * x0.size,
+                      options={"maxiter": MAXITER, "maxfun": MAX_TRIALS, "maxcor": 20,
+                               "maxls": 20, "ftol": 1e-12, "gtol": 1e-8})
+    u, final_value, iterations = result.x, float(result.fun), iterations + result.nit
+result.nit = iterations
+print(f"[solve] {result.nit} L-BFGS-B iterations, {counts['trials']} trials "
+      f"({counts['rejected']} rejected), status {result.status}: {result.message}", flush=True)
 optimization_seconds = time.perf_counter() - started
 
 ###############################################################################

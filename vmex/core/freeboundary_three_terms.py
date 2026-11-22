@@ -72,12 +72,13 @@ class BoundaryResidual:
 
     ``normal`` is ``B_out . n / |B_in|``, ``pressure`` is
     ``(|B_out|^2 - |B_in|^2 - 2 mu0 p) / (2 |B_in|^2)`` and ``sheet_current``
-    is ``|n x (B_out - B_in)| / |B_in| = mu0 |K| / |B_in|``.
+    is ``|n x (B_out - B_in)| / |B_in| = mu0 |K| / |B_in|``.  ``normal_max`` is the largest ``|normal|`` on the grid.
     """
 
     normal: float
     pressure: float
     sheet_current: float
+    normal_max: float = 0.0
 
 
 def _fingerprint(*trees) -> str:
@@ -128,7 +129,8 @@ def summarize_boundary_residual(rows, weights) -> BoundaryResidual:
         return float(np.sqrt(np.sum(weights * value**2)))
 
     return BoundaryResidual(normal=rms(rows[0]), pressure=rms(rows[1]),
-                            sheet_current=rms(np.linalg.norm(rows[2:], axis=0)))
+                            sheet_current=rms(np.linalg.norm(rows[2:], axis=0)),
+                            normal_max=float(np.max(np.abs(rows[0]))))
 
 
 def _edge_pressure(inp: VmecInput) -> tuple[float, float]:
@@ -189,6 +191,13 @@ def _equal_arc_rows(gamma):
     return arc, jnp.imag(c1) / jnp.abs(c1)
 
 
+def _jacfwd(fun, x, batch=32):
+    """``jax.jacfwd(fun)(x)``, ``batch`` directions at a time: one batch of every direction of a function on the
+    boundary grid holds directions x grid x modes numbers (16 x 16 modes: 18.6 GiB)."""
+    columns = jax.lax.map(lambda e: jax.jvp(fun, (x,), (e,))[1], jnp.eye(x.size, dtype=x.dtype), batch_size=batch)
+    return jax.tree.map(lambda a: jnp.moveaxis(a, 0, -1), columns)
+
+
 def _displacement_metrics(inp, xb, max_mode):
     """``(A, B)``: the quadratic forms of a change of the boundary coordinates ``xb``
     (``pack_boundary(..., vary_major_radius=True)``) in the surface's normal and total displacement, area weighted over
@@ -211,7 +220,7 @@ def _displacement_metrics(inp, xb, max_mode):
 
     xb = jnp.asarray(xb, dtype=float)
     R, Z, R_t, Z_t, R_p, Z_p = (np.asarray(a).ravel() for a in surface(xb))
-    D_R, D_Z = (np.asarray(a).reshape(-1, xb.size) for a in jax.jacfwd(lambda z: surface(z)[:2])(xb))
+    D_R, D_Z = (np.asarray(a).reshape(-1, xb.size) for a in _jacfwd(lambda z: surface(z)[:2], xb))
     # The normal e_theta x e_phi in (R, phi, Z): (-R Z_t, Z_t R_p - R_t Z_p, R R_t); dA ~ its length.
     area = np.sqrt((R * Z_t) ** 2 + (Z_t * R_p - R_t * Z_p) ** 2 + (R * R_t) ** 2)
     D_n = (-(R * Z_t)[:, None] * D_R + (R * R_t)[:, None] * D_Z) / area[:, None]
@@ -242,8 +251,9 @@ def _arc_label(inp):
     return label
 
 
+
 #: The flat-arc gauge (``labelling="flat_arc"``): the boundary directions it holds are those of the fit's Jacobian, in
-#: column-scaled coordinates, with a singular value below ``gauge_tau`` times the largest and a normal share (RMS
+#: column-scaled coordinates, with a singular value below :data:`GAUGE_TAU` times the largest and a normal share (RMS
 #: normal over RMS displacement of the surface) below :data:`GAUGE_NORMAL_SHARE`.  The default holds every tangential
 #: direction (its rows are soft and zero at the reference fit, so a direction the interface rows determine is theirs
 #: anyway; the weight decides, no cutoff).
@@ -287,7 +297,7 @@ class ThreeTermsConfig:
     asks for equal arc length on every toroidal cut of the current surface (and a zero phase of its ``m = 1``
     part), ``"flat_arc"`` holds the arc-length distribution of a reference fit along the fit's flat, tangential
     directions on the current surface (:meth:`ThreeTermsModel.set_flat_arc_gauge`: the no-label fit, made well
-    determined; ``gauge_tau`` selects the directions), and ``"none"`` adds no labelling rows (any labelling at
+    determined), and ``"none"`` adds no labelling rows (any labelling at
     ``label_weight=0`` is the same model).  ``label_weight`` scales those rows against the interface rows
     (default :data:`LABEL_WEIGHTS`).  ``start`` is the initial boundary: ``"deck"``, ``"nestor"`` (this ladder's
     NESTOR free boundary) or ``"best"`` (both, keeping the lower cost: the interface least squares has several
@@ -299,8 +309,7 @@ class ThreeTermsConfig:
     (use ``(4 nfp nphi, 2 ntheta)``); ``net_current_weight`` scales the net-poloidal-current row.  The boundary
     Fourier coefficients up to ``max_mode`` (default: all) and ``RBC(0,0)`` are the unknowns.  A trust region
     with exact implicit Jacobians runs to a relative cost change of ``jacobian_ftol``, then Levenberg-Marquardt
-    steps with its last Jacobian go on to ``ftol`` (``max_nfev`` evaluations at most); ``trial_ftol`` solves the
-    trial equilibria to a looser force residual (each is re-solved to the deck's before it is differentiated)
+    steps with its last Jacobian go on to ``ftol`` (``max_nfev`` evaluations at most)
     and ``chunk`` bounds the Jacobian columns per batch.  ``success`` also requires every RMS interface residual
     at or below ``max_residual``.  ``bootstrap`` (:class:`~vmex.core.bootstrap.KineticProfiles`, with
     ``bootstrap_helicity`` and ``bootstrap_weight``) solves a Redl-self-consistent current profile together with
@@ -324,13 +333,11 @@ class ThreeTermsConfig:
     ftol: float = 1e-4
     jacobian_ftol: float | None = 1e-2
     max_nfev: int = 60
-    trial_ftol: float | None = None
     chunk: int = 8
     max_residual: float = ACCEPTED_RESIDUAL
     bootstrap: Any = field(default=None, repr=False)
     bootstrap_helicity: int = 0
     bootstrap_weight: float = 100.0
-    gauge_tau: float = GAUGE_TAU
 
     def __post_init__(self) -> None:
         if self.labelling not in LABEL_WEIGHTS:
@@ -361,9 +368,9 @@ class ThreeTermsConfig:
                     weights=tuple(self.weights), net_current_weight=self.net_current_weight,
                     label_weight=self.resolved_label_weight,
                     labelling=self.labelling if self.resolved_label_weight else "none",
-                    quadrature=self.quadrature, trial_ftol=self.trial_ftol, chunk=self.chunk,
+                    quadrature=self.quadrature, chunk=self.chunk,
                     bootstrap=self.bootstrap, bootstrap_helicity=self.bootstrap_helicity,
-                    bootstrap_weight=self.bootstrap_weight, gauge_tau=self.gauge_tau)
+                    bootstrap_weight=self.bootstrap_weight)
 
 
 def resolve_three_terms(requested: Any, inp: Any) -> "ThreeTermsConfig | None":
@@ -460,7 +467,7 @@ def solve_free_boundary_three_terms(
     out = model.solve_boundary(model.params0, external_field, x0=x0, jacobian=jacobian, ftol=config.ftol,
                                jacobian_ftol=config.ftol if config.jacobian_ftol is None else config.jacobian_ftol,
                                max_nfev=config.max_nfev, refresh_on_stall=True, verbose=verbose)
-    state, _, params, _ = out["aux"]
+    state, _, params = out["aux"]
     boundary = model._im.input_with_params(model.fixed, params)
     residual = model.boundary_residual(state, params, external_field)
     converged = bool(out["converged"])
@@ -506,9 +513,7 @@ class ThreeTermsModel:
     :meth:`solve`; ``rows(state, params, field)`` and ``rows_at(state,
     runtime, field)`` are the traceable rows themselves.
 
-    ``trial_ftol`` solves the trial equilibria of the boundary steps to a looser
-    force residual (each is re-solved to the deck's before it is
-    differentiated); ``quadrature = (quad_nt, quad_np)`` fixes the singular
+    ``quadrature = (quad_nt, quad_np)`` fixes the singular
     quadrature instead of planning it to ``digits`` (``quad_nt`` a multiple of
     ``nfp * nphi``), whose error estimate alone can exhaust a GPU on a strongly
     shaped boundary.  Use ``(4 nfp nphi, 2 ntheta)``: with ``quad_np = ntheta``
@@ -537,9 +542,9 @@ class ThreeTermsModel:
     """
 
     def __init__(self, inp: VmecInput, *, max_mode=None, nphi=48, ntheta=48, digits=4,
-                 weights=(1.0, 1.0, 1.0), net_current_weight=1.0, label_weight=None, chunk=8, device=None,
-                 trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=0, bootstrap_weight=100.0,
-                 fixed_boundary=False, labelling="equal_arc", gauge_tau=GAUGE_TAU):
+                 weights=(1.0, 1.0, 1.0), net_current_weight=1.0, label_weight=None, chunk=8,
+                 quadrature=None, bootstrap=None, bootstrap_helicity=0, bootstrap_weight=100.0,
+                 fixed_boundary=False, labelling="equal_arc"):
         from . import implicit as im
         from .bootstrap import HalfMeshCurrent
         from .optimize import _ess_scale, boundary_arrays_from_x, pack_boundary
@@ -557,7 +562,7 @@ class ThreeTermsModel:
         self.bootstrap = None if bootstrap is None else HalfMeshCurrent(fixed, bootstrap, bootstrap_helicity,
                                                                        bootstrap_weight)
         self.fixed_boundary = bool(fixed_boundary)
-        self.labelling, self.label_weight, self.gauge_tau = labelling, float(label_weight), float(gauge_tau)
+        self.labelling, self.label_weight = labelling, float(label_weight)
         self._gauge = None  # flat arc's rows, once set: (label_weight * M^T, reference arc distribution)
         self._arc_label = _arc_label(fixed)
         if self.fixed_boundary and self.bootstrap is None:
@@ -565,20 +570,15 @@ class ThreeTermsModel:
         if self.bootstrap is not None:
             self.fixed = fixed = self.bootstrap.deck
         self.max_mode = int(max(fixed.mpol - 1, fixed.ntor) if max_mode is None else max_mode)
-        device = jax.devices()[0] if device is None else device
-        cfg = im.make_config(fixed, multigrid=True, hot_restart=True)
-        self.cfg = cfg = im._canonical_config(replace(cfg, device=device))
-        # Trial points (the boundary steps) may converge to a looser force residual: their rows move by far less
-        # than the interface floor, and a state is solved to the deck's tolerance before it is differentiated.
-        self.cfg_trial = cfg
-        if trial_ftol is not None:
-            ftols = np.array(fixed.ftol_array, dtype=float)
-            ftols[-1] = max(float(trial_ftol), ftols[-1])
-            loose = im.make_config(replace(fixed, ftol_array=ftols), multigrid=True, hot_restart=True)
-            self.cfg_trial = im._canonical_config(replace(loose, device=device))
-            im._template_runtime(self.cfg_trial)
-        self.params0 = im.params_from_input(fixed, device=device)
-        im._template_runtime(cfg)
+        device = jax.devices()[0]
+
+        def configure(deck):
+            cfg = im.make_config(deck, multigrid=True, hot_restart=True)
+            self.cfg = cfg = im._canonical_config(replace(cfg, device=device))
+            self.params0 = im.params_from_input(deck, device=device)
+            im._template_runtime(cfg)
+
+        configure(fixed)
         self.x0 = pack_boundary(fixed, self.max_mode, vary_major_radius=True)
         self.x_scale = _ess_scale(fixed, self.max_mode, 1.2, vary_major_radius=True)
         if self.fixed_boundary:
@@ -601,6 +601,14 @@ class ThreeTermsModel:
             from .errors import VmecConvergenceError
             raise VmecConvergenceError("the initial boundary has no converged fixed-boundary equilibrium")
         state, mask = seed[:2]
+        if np.size(fixed.ns_array) > 1:
+            # A radial ladder is the cold start's: every later solve starts from a state on the final grid, which a
+            # ladder would first interpolate down to its coarsest grid.
+            last = lambda a: np.atleast_1d(np.asarray(a))[-1:]  # noqa: E731
+            self.fixed = replace(self.fixed, ns_array=last(fixed.ns_array), ftol_array=last(fixed.ftol_array),
+                                 niter_array=last(fixed.niter_array))
+            configure(self.fixed)
+            im._HOT_CACHE[self.cfg] = state
         self.seed = (state, mask)
         if not self.fixed_boundary:
             self._interface_setup(state, nphi, ntheta, digits, quadrature, weights, label_weight, net_current_weight,
@@ -693,12 +701,14 @@ class ThreeTermsModel:
         active = im._active_state_fields(cfg)
         edge = im._edge_mask(cfg)
 
-        def tangents(params, state, mask, batch):
-            """Projected state responses to the stacked parameter tangents: one block factorization, chunked."""
+        def tangents(params, state, mask, batch, bands):
+            """Projected state responses to the stacked parameter tangents, chunked, on the config's block
+            factorization at ``state`` (``bands``, as upstream's block Jacobian: the program builds no second one)."""
             return im._implicit_evolved_tangent_multi_rhs(
                 params, cfg, jax.lax.stop_gradient(state), mask, batch, active_fields=active,
                 probe_chunk_size=self.chunk, response_chunk_size=self.chunk,
-                certify_rtol=float(cfg.jacobian_adjoint_tol), certify_maxiter=int(cfg.jacobian_adjoint_maxiter))[0]
+                certify_rtol=float(cfg.jacobian_adjoint_tol), certify_maxiter=int(cfg.jacobian_adjoint_maxiter),
+                bands=bands)[0]
 
         def push(fun, state, mask, params, dz_batch, params_batch):
             """Columns of ``fun(state, params)`` along the stacked responses, ``chunk`` at a time.
@@ -723,24 +733,24 @@ class ThreeTermsModel:
             return im._assemble(z, im.runtime_from_params(params, cfg), frozen, P, edge)
 
         self._tangents = jax.jit(tangents)
-        self.push = push
         self._push_rows = jax.jit(lambda state, mask, params, dz, pb, field: push(
             lambda s, p: rows(s, p, field), state, mask, params, dz, pb))
         # First-order trial state from the last linearization (upstream's perturbation warm start): it keeps
         # the trial on the path the Jacobian was taken along, instead of a hot restart that may drift.
         self._predict = jax.jit(predict)
 
-        def pullback(fun, state, mask, params, cotangents, *args):
+        def pullback(fun, state, mask, params, cotangents, *args, bands=None):
             """``ImplicitParams`` gradient of ``cotangents[i] . fun(state, params, *args)`` through the equilibrium.
 
             Reverse mode with one block factorization shared by every row (upstream's implicit pullback): for a few
             scalar rows of an expensive function this costs a few reverse passes, not one forward pass per
             parameter direction.  ``fun`` may be a tuple of functions with ``cotangents`` a tuple of their rows'
             cotangents: each row then runs only its own function's reverse pass, and the rows come out in order.
+            ``bands`` (:meth:`stored_bands`) is that factorization where the program cannot build its own.
             """
             frozen = jax.lax.stop_gradient(state)
             back = im._block_state_pullback(params, cfg, frozen, mask, active_fields=active,
-                                            probe_chunk_size=self.chunk)
+                                            probe_chunk_size=self.chunk, bands=bands)
             funs, blocks = (fun, cotangents) if isinstance(fun, tuple) else ((fun,), (cotangents,))
             parts = []
             for f, c in zip(funs, blocks):
@@ -754,43 +764,28 @@ class ThreeTermsModel:
             return jax.tree.map(lambda *a: jnp.concatenate(a), *parts)
 
         self.pullback = pullback
-        self._rows_pullback = jax.jit(lambda state, mask, params, cotangent, field: jax.tree.map(
-            lambda a: a[0], pullback(rows, state, mask, params, cotangent[None], field)))
         self._linearization = None
         self._last_linearize = None  # (key, extra key, result, _linearization) of the latest linearize
         self._radius = None  # the boundary steps' trust radius, carried from one solve to the next
 
-    def rows_pullback(self, state, mask, params, field, cotangent):
-        """``ImplicitParams`` gradient of ``cotangent . rows`` through the equilibrium of a solved (tight) state: one
-        reverse pass, the casing rematerialized (:func:`~vmex.core.virtual_casing.rematerialized_scans`).  With the
-        rows themselves as ``cotangent``, the gradient of the fit's cost: no Jacobian."""
-        with vc.rematerialized_scans():
-            return self._rows_pullback(state, mask, params, jnp.asarray(cotangent), field)
+    def stored_bands(self, params, state, mask):
+        """The config's block factorization at ``state`` for a pullback of a system too large to build one in its
+        own program (``implicit._large_bands``); ``None`` otherwise.  Factored at ``state`` itself: the adjoint's
+        one refinement pass does not absorb a reused factorization's distance."""
+        im, cfg = self._im, self.cfg
+        large = im._large_bands(cfg.resolution.ns, len(im._active_state_fields(cfg)) * int(mask.R_cos.shape[1]),
+                                state.R_cos.dtype)
+        return im._block_bands(cfg, params, state, mask, z=state) if large else None
 
-    def solve(self, params, seed=None, tight=True):
-        """Hot-restarted fixed-boundary equilibrium at ``params``: ``(state, mask)``, or ``None`` if not certified.
-
-        ``tight=False`` solves to the trial tolerance, without the Newton refinement that certifies a state for
-        differentiation (:meth:`linearize` re-solves tight first).
-        """
-        im, cfg = self._im, (self.cfg if tight else self.cfg_trial)
+    def solve(self, params, seed=None):
+        """Hot-restarted fixed-boundary equilibrium at ``params``: ``(state, mask)``, or ``None`` if not certified."""
+        im, cfg = self._im, self.cfg
         if seed is not None:
             im._PERTURB_SEED[cfg] = seed
         params_np = jax.tree.map(lambda a: np.asarray(a, dtype=np.float64), params)
-        if tight:
-            state, mask, status, _, _ = im._host_solve_and_mask_status(cfg, params_np)
-            if int(status) != 0:
-                return None
-        else:  # a trial point is not differentiated: the forward solve alone, without the Newton refinement
-            with im._device_context(cfg):
-                try:
-                    state, mask = im._host_solve_and_mask_impl(cfg, params_np, refine=False)
-                except (VmecError, RuntimeError):  # RuntimeError: the relayed sentinel of a VmecError
-                    return None
-            result = im._LAST_SOLVE[cfg][1]
-            fsq = float(result.fsqr) + float(result.fsqz) + float(result.fsql)
-            if not (bool(result.converged) or fsq / cfg.ftol <= cfg.max_fsq_ratio):
-                return None
+        state, mask, status, _, _ = im._host_solve_and_mask_status(cfg, params_np)
+        if int(status) != 0:
+            return None
         place = lambda tree: jax.device_put(jax.tree.map(jnp.asarray, tree), cfg.device)  # noqa: E731
         return place(state), place(mask)
 
@@ -804,23 +799,17 @@ class ThreeTermsModel:
             state, self._im.runtime_from_params(params, self.cfg), params))
         return float(np.max(np.abs(difference)) / np.max(np.abs(target)))
 
-    def evaluate(self, x, params, field, seed=None, tight=False, near=None):
-        """Interface rows at boundary ``x``: ``(rows, (state, mask, params_x, tight))``, or ``None`` if the solve
-        failed; ``tight`` marks a state solved to the deck's tolerance rather than the trial one.  ``near``
-        ``(x_near, state, mask)``, a solved state close to ``x``, replaces the last linearization's as the anchor of
-        the first-order seed (its responses kept)."""
+    def evaluate(self, x, params, field, seed=None):
+        """Interface rows at boundary ``x``: ``(rows, (state, mask, params_x))``, or ``None`` if the solve failed."""
         params_x = self.with_boundary(params, jnp.asarray(x))
         if seed is None and self._linearization is not None:
             x_ref, state_ref, mask_ref, dz = self._linearization
-            if near is not None:
-                x_ref, state_ref, mask_ref = near
             seed = self._predict(state_ref, mask_ref, dz, jnp.asarray(np.asarray(x) - x_ref), params_x)
-        tight = tight or self.cfg_trial is self.cfg
-        solved = self.solve(params_x, seed, tight)
+        solved = self.solve(params_x, seed)
         if solved is None:
             return None
         state, mask = solved
-        return np.asarray(self._rows(state, params_x, field)), (state, mask, params_x, tight)
+        return np.asarray(self._rows(state, params_x, field)), (state, mask, params_x)
 
     def boundary_directions(self, params, x):
         """``ImplicitParams`` tangents of the boundary coordinates, stacked."""
@@ -833,7 +822,7 @@ class ThreeTermsModel:
         The interface rows leave the boundary's labelling free: a few directions of the boundary coordinates are
         nearly flat for them, and a fit stops anywhere along those.  With ``jacobian`` the fit's rows' Jacobian at
         ``x`` (:meth:`linearize`), the held directions are the right singular vectors of its boundary columns
-        (scaled to unit norm) with a singular value below ``gauge_tau`` times the largest and a surface displacement
+        (scaled to unit norm) with a singular value below :data:`GAUGE_TAU` times the largest and a surface displacement
         of normal share below :data:`GAUGE_NORMAL_SHARE` (a relabelling, not a shape change).  The rows are
         ``label_weight * M^T (L - L_x)``, ``L`` the arc-length distribution of the current boundary
         (:func:`_arc_label`), ``L_x`` that of the fit at ``x`` and ``M`` an orthonormal basis of its change along the
@@ -855,11 +844,11 @@ class ThreeTermsModel:
         norms[norms == 0.0] = 1.0
         _, sv, Vt = np.linalg.svd(J / norms, full_matrices=False)
         A, B = _displacement_metrics(self.fixed, xb, self.max_mode)
-        flat = [u for s, u in zip(sv, Vt) if s < self.gauge_tau * sv[0]]
+        flat = [u for s, u in zip(sv, Vt) if s < GAUGE_TAU * sv[0]]
         tangential = lambda u: u @ A @ u < GAUGE_NORMAL_SHARE ** 2 * (u @ B @ u)  # noqa: E731
         held = [u for u in flat if tangential(u / norms)]
         if held:
-            L = jax.jacfwd(self._boundary_arc)(jnp.asarray(xb))
+            L = _jacfwd(self._boundary_arc, jnp.asarray(xb, dtype=float))
             M = np.linalg.qr(np.asarray(L) @ (np.array(held).reshape(-1, nb) / norms).T)[0]
             weights = self.label_weight * M.T
             weights = np.vstack([weights, np.zeros((max(old - weights.shape[0], 0), weights.shape[1]))])
@@ -869,9 +858,9 @@ class ThreeTermsModel:
         if last is not None and last[2][0] is jacobian:  # keep that linearization, its gauge rows swapped: they
             # depend on the boundary alone, so their columns are the new rows' derivatives along its tangents
             key, extra_key, (columns, dz, batch, aux), linearization = last
-            new = np.zeros((0, columns.shape[1])) if self._gauge is None else np.asarray(jax.vmap(
-                lambda t: jax.jvp(lambda p: self._gauge_rows(p, *self._gauge), (aux[2],), (t,))[1]
-            )(batch)).T
+            new = np.zeros((0, columns.shape[1])) if self._gauge is None else np.asarray(jax.lax.map(
+                lambda t: jax.jvp(lambda p: self._gauge_rows(p, *self._gauge), (aux[2],), (t,))[1], batch, batch_size=32
+            )).T  # in batches, as _jacfwd
             i = self._n_interface
             columns = np.vstack([columns[:i], new, columns[i + old:]])
             self._last_linearize = (key, extra_key, (columns, dz, batch, aux), linearization)
@@ -894,19 +883,18 @@ class ThreeTermsModel:
         xb = jnp.asarray(x, dtype=float)[:nb]
         g = M @ (self._arc_label(params.rbc, params.zbs) - reference)
         S = np.zeros((np.size(x), np.size(x)))
-        S[:nb, :nb] = np.asarray(jax.hessian(lambda z: g @ (M @ self._boundary_arc(z)))(xb))
+        S[:nb, :nb] = np.asarray(_jacfwd(jax.grad(lambda z: g @ (M @ self._boundary_arc(z))), xb))
         return S
 
     def linearize(self, x, aux, field, extra=None):
         """Columns of the interface rows along the boundary coordinates (and the ``extra`` parameter tangents).
 
-        A trial state is first solved to the deck's tolerance (from itself). Returns ``(J, dz, params_batch, aux)``:
-        the Jacobian, the projected state responses and parameter tangents of its columns, and the (tight) state
-        they belong to.  The responses also seed the next trials (first-order predicted states).  A call at the
-        boundary, plasma parameters and field of the latest one returns its result (without ``extra``'s columns
-        when not asked for): a polish that stalls asks again for the Jacobian it was given.
+        Returns ``(J, dz, params_batch, aux)``: the Jacobian, the projected state responses and parameter tangents of
+        its columns, and the state they belong to.  The responses also seed the next trials (first-order predicted
+        states).  A call at the boundary, plasma parameters and field of the latest one returns its result (without
+        ``extra``'s columns when not asked for).
         """
-        state, mask, params_x, tight = aux
+        state, mask, params_x = aux
         key = _fingerprint(x, params_x, _external_field(field))
         extra_key = None if extra is None else _fingerprint(extra)
         last = self._last_linearize
@@ -918,12 +906,6 @@ class ThreeTermsModel:
                 J = J[:, :n]
                 dz, batch = jax.tree.map(lambda a: a[:n], dz), jax.tree.map(lambda a: a[:n], batch)
             return J, dz, batch, aux
-        if not tight:
-            solved = self.solve(params_x, seed=state)
-            if solved is None:
-                raise RuntimeError("the trial state does not converge to the deck's tolerance")
-            state, mask = solved
-            aux = (state, mask, params_x, True)
         directions = self.boundary_directions(params_x, x)
         nb = self.n_boundary
         # Boundary, bootstrap-current and extra directions each in a program of its own: one batch of every
@@ -936,12 +918,21 @@ class ThreeTermsModel:
             groups.append(extra)
         join = lambda *a: jnp.concatenate(a)  # noqa: E731
         # One tangent solve (one block factorization) for every group; the pushes stay per group.
-        dz_all = self._tangents(params_x, state, mask, jax.tree.map(join, *groups))
+        self._last_linearize = self._linearization = None  # released first: two sets of responses need not fit
+        bands = self._im._block_bands(self.cfg, params_x, state, mask)
+        dz_all = self._tangents(params_x, state, mask, jax.tree.map(join, *groups), bands)
         ends = np.cumsum([jax.tree.leaves(batch)[0].shape[0] for batch in groups])
         parts = [(jax.tree.map(lambda a: a[lo:hi], dz_all), batch)
                  for lo, hi, batch in zip(np.r_[0, ends[:-1]], ends, groups)]
         columns = np.hstack([np.asarray(self._push_rows(state, mask, params_x, dz, batch, field)).T
                              for dz, batch in parts])
+        del bands, dz_all
+        if self._im._large_bands(self.cfg.resolution.ns, len(self._im._active_state_fields(self.cfg))
+                                 * int(mask.R_cos.shape[1]), state.R_cos.dtype):
+            # a large system keeps its responses (the trials' first-order seeds) in host memory: the GPU then
+            # holds one block factorization at a time beside them (16 x 16 on 201 surfaces: 4.7 GiB)
+            parts = [(jax.tree.map(np.asarray, dz), batch) for dz, batch in parts]
+            join = lambda *a: np.concatenate(a)  # noqa: E731
         dz = jax.tree.map(join, *[dz for dz, _ in parts[:n_coordinates]])
         self._linearization = (np.asarray(x, dtype=float).copy(), state, mask, dz)
         if extra is not None:
@@ -958,7 +949,7 @@ class ThreeTermsModel:
         step reduces the cost, or they end above ``target_cost``, a trust region with fresh Jacobians runs to
         ``jacobian_ftol`` and the reuse steps finish to ``ftol`` (see :func:`solve_free_boundary_three_terms`);
         with ``refresh_on_stall`` a finish that stalled on a stale Jacobian retries once with a fresh one there.
-        Returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask, params, tight), ``nfev``,
+        Returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask, params), ``nfev``,
         ``njev``, ``accepted`` and ``converged``.
         """
         import scipy.optimize
@@ -978,7 +969,8 @@ class ThreeTermsModel:
             # One fresh Jacobian where the steps stalled, and the same steps again, before a full trust region.
             J1, _, _, aux1 = self.linearize(out["x"], out["aux"], field)
             again = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), out["x"], out["rows"], aux1, J1,
-                                         ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
+                                         ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius,
+                                         fresh=True)
             self._radius = again["radius"]
             again["nfev"] += out["nfev"]
             if target_cost is None or 0.5 * again["rows"] @ again["rows"] <= target_cost:
@@ -1017,7 +1009,8 @@ class ThreeTermsModel:
         if refresh_on_stall and not out["converged"]:  # stalled on a stale Jacobian: one fresh one there
             J, _, _, aux = self.linearize(out["x"], out["aux"], field)
             again = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), out["x"], out["rows"], aux, J,
-                                         ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
+                                         ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius,
+                                         fresh=True)
             self._radius, njev = again["radius"], njev + 1
             # still stalled on a fresh Jacobian: the steps gain nothing the rows can resolve, the point is
             # stationary (DESC's least squares counts relative gains below its ftol, 1e-2, as converged)
@@ -1027,7 +1020,7 @@ class ThreeTermsModel:
 
 
 
-def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, radius=None):
+def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, radius=None, fresh=False):
     """Trust-region Gauss-Newton steps with a fixed Jacobian ``J`` from ``x`` (``evaluate(x) -> (r, aux)`` or ``None``).
 
     Each step costs one evaluation.  In Marquardt-scaled coordinates the step is the Levenberg-Marquardt step
@@ -1038,6 +1031,11 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
     Stops at a relative cost change of ``ftol`` that the linear model predicted, after three steps in a row
     that each gained under 5% (the Jacobian is stale there), or when the radius falls below 1e-4 of the
     Gauss-Newton step; ``reason`` is ``"ftol"``, ``"stalled"``, ``"radius"`` or ``"max_nfev"``.
+    ``fresh`` marks ``J`` as taken at ``x`` where the last steps stalled: until a step is accepted, one that
+    fails is the radius' fault, not the Jacobian's.  The carried radius is then kept as it is, failed steps only
+    shrink it down to a predicted relative gain of ``ftol`` (``"radius"``; the Gauss-Newton step of a nearly
+    singular ``J`` is long in directions the rows barely see, its length is no yardstick), and a short step that
+    gains what was predicted is not a slow one.  The radius returned is the last accepted step's.
     """
     J = np.asarray(J)
     if not np.all(np.isfinite(J)):
@@ -1048,7 +1046,7 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
         U, sv, Vt = np.linalg.svd(J / norms, full_matrices=False)
     except np.linalg.LinAlgError as error:  # a rejected trial, not the end of the run
         raise RuntimeError(f"boundary Jacobian: {error}") from error
-    nfev, accepted, converged, slow, reason = 1, 0, False, 0, "max_nfev"
+    nfev, accepted, converged, slow, reason, last = 1, 0, False, 0, "max_nfev", None
     started = time.perf_counter()
 
     def step(g, lam):
@@ -1062,8 +1060,8 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
             break
         full = np.linalg.norm(step(g, 0.0))
         if nfev == 1:  # a carried radius, but not far below this Jacobian's own step
-            radius = full if radius is None else max(radius, 0.05 * full)
-        if radius < 1e-4 * full:
+            radius = full if radius is None else radius if fresh else max(radius, 0.05 * full)
+        if not fresh and radius < 1e-4 * full:
             reason = "radius"
             break
         lam = 0.0
@@ -1076,6 +1074,9 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
         z = step(g, lam)
         length = np.linalg.norm(z)
         predicted = cost - 0.5 * (r @ r - g @ g + np.sum((g + sv * z) ** 2))
+        if fresh and predicted <= ftol * cost:
+            reason = "radius"
+            break
         x_new = x + (Vt.T @ z) / norms
         got = evaluate(x_new)
         nfev += 1
@@ -1089,14 +1090,15 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
             radius = 0.25 * length
         elif rho > 0.75 and length > 0.99 * radius:
             radius = 2.0 * radius
-        slow = slow + 1 if cost_new > 0.95 * cost else 0
+        at_x = fresh and not accepted  # J is still the Jacobian at x
+        slow = slow + 1 if cost_new > 0.95 * cost and not (at_x and cost_new >= cost or fresh and rho > 0.75) else 0
         if cost_new < cost:
-            x, (r, aux), accepted = x_new, got, accepted + 1
+            x, (r, aux), accepted, last = x_new, got, accepted + 1, length
             if cost - cost_new <= ftol * cost and rho > 0.25:  # a small gain the linear model foresaw
                 converged, reason = True, "ftol"
                 break
         if slow == 3:  # three steps in a row gained under 5%: the Jacobian no longer describes the rows here
             reason = "stalled"
             break
-    return dict(x=x, rows=r, aux=aux, nfev=nfev, accepted=accepted, converged=converged, radius=radius,
-                reason=reason)
+    return dict(x=x, rows=r, aux=aux, nfev=nfev, accepted=accepted, converged=converged,
+                radius=last if fresh and last is not None else radius, reason=reason)

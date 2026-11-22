@@ -61,6 +61,25 @@ def _scaled(field, factor):
     return BiotSavart(Coils(coils.curves, coils.dofs_currents_raw * factor, currents_scale=coils.currents_scale))
 
 
+def test_restart_on_another_radial_grid_goes_through_the_saved_grid():
+    """The driver's ``--restart`` with another ``--ns``: the saved grid, then the new one, at the saved tolerance."""
+    from importlib.util import module_from_spec, spec_from_file_location
+
+    spec = spec_from_file_location(
+        "three_term_driver", DATA.parent / "optimization" / "single_stage_free_boundary_optimization_three_term.py")
+    driver = module_from_spec(spec)
+    spec.loader.exec_module(driver)
+    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 11), ns_array=np.array([5, 11]), ftol_array=np.array([1e-8, 1e-13]),
+                  niter_array=np.array([500, 2000]))
+    out = driver.radial_regrid(inp, 25)
+    np.testing.assert_array_equal(out.ns_array, [11, 25])
+    np.testing.assert_array_equal(out.ftol_array, [1e-13, 1e-13])
+    np.testing.assert_array_equal(out.niter_array, [60000, 60000])
+    np.testing.assert_array_equal(driver.radial_regrid(replace(inp, niter_array=np.array([500, 90000])), 25).niter_array,
+                                  [90000, 90000])
+    np.testing.assert_array_equal(out.rbc, inp.rbc)  # the saved boundary
+
+
 def test_nonzero_edge_pressure_is_rejected():
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 11), pmass_type="power_series",
                   am=np.array([1.0e3, -0.5e3] + [0.0] * 19))
@@ -210,80 +229,6 @@ SMALL_ANCHORED = vj.ThreeTermsConfig(labelling="anchored", **SMALL)
 def _small_vacuum():
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 2, 7), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
     return inp, _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
-
-
-def test_curvature_memory_survives_a_failed_svd(monkeypatch):
-    """The curvature memory's model: a non-finite direction drops the memory, and where LAPACK's divide-and-conquer
-    SVD does not converge the ``gesvd`` driver answers with the same model."""
-    from vmex.core import freeboundary_three_terms_problem as fbp
-
-    rng = np.random.default_rng(0)
-    D, ED, norms = rng.standard_normal((6, 3)), rng.standard_normal((6, 3)), np.linspace(1.0, 2.0, 6)
-    memory = fbp._CurvatureMemory(4)
-    memory.add(D, ED)
-    reference = memory.model(norms)
-
-    def failing(*args, **kwargs):
-        raise np.linalg.LinAlgError("SVD did not converge")
-
-    monkeypatch.setattr(np.linalg, "svd", failing)
-    np.testing.assert_allclose(memory.model(norms), reference, rtol=1e-10, atol=1e-12)
-    memory.add(np.full((6, 1), np.nan), np.zeros((6, 1)))
-    assert memory.model(norms) is None and memory.D is None and memory.ED is None
-
-
-@needs_vc
-def test_certify_rejects_an_unconverged_fit_or_newton_gradient():
-    problem = ThreeTermsFreeBoundaryProblem.__new__(ThreeTermsFreeBoundaryProblem)
-    problem.gradient_certify, problem.gradient_fit_xtol, problem.gradient_rtol = 10.0, 1e-6, 1e-3
-    problem.stats, problem._cache, problem._rejections = dict(failed=0, rejection_reasons={}), {}, {}
-    problem._anchor = "last certified"
-    for fit, newton, certified in ((5e-6, 5e-3, True), (2e-2, 5e-3, False), (5e-6, 0.5, False)):
-        def linearize(x, sol, fit=fit, newton=newton):
-            problem.stats.update(fit_step=fit, newton_residual=newton)
-            problem._anchor = "this trial"
-            sol["gradients"] = np.zeros((1, 2))
-        problem._linearize = linearize
-        x, sol = np.array([fit, newton]), {}
-        got = problem._certify(x, sol)
-        assert (got is sol) == certified
-        assert problem._anchor == ("this trial" if certified else "last certified")
-        problem._anchor = "last certified"
-    assert problem.stats["failed"] == 2
-
-
-@needs_vc
-def test_converge_fit_converges_a_curved_fit_from_a_frozen_metric():
-    """A curved least-squares fit with a nonzero residual converges to ``gradient_fit_xtol`` from the start's
-    Jacobian, re-linearized where it went stale, and returns the latest one."""
-    from vmex.core import freeboundary_three_terms_problem as fbp
-
-    def residual(z):
-        return np.array([z[0] - 1.0 + 0.5 * z[1] ** 2, 2.0 * (z[1] - 0.5 + 0.3 * z[0] ** 2), 0.1 * z[0] * z[1]])
-
-    def jacobian(z):
-        return np.array([[1.0, z[1]], [1.2 * z[0], 2.0], [0.1 * z[1], 0.1 * z[0]]])
-
-    def cost_gradient(z, params0, field, xj, *, design=True, near=None):
-        r = residual(z)
-        return jacobian(z).T @ r, None, r, (None, None, None, True)
-
-    problem = ThreeTermsFreeBoundaryProblem.__new__(ThreeTermsFreeBoundaryProblem)
-    problem.gradient_fit_xtol, problem.stats = 1e-9, {}
-    problem._curvature = fbp._CurvatureMemory(fbp.CURVATURE_MEMORY)
-    problem.model = SimpleNamespace(gauge_curvature=lambda b, params: None,
-                                    linearize=lambda b, aux, field: (jacobian(b), None, None, aux))
-    problem._params_at = lambda xj: None
-    problem._cost_gradient = cost_gradient
-    z0 = np.array([0.0, 0.0])
-    J0 = jacobian(z0)
-    sol = dict(x=z0, params=None)
-    J_b = problem._converge_fit(sol, J0, None, None)
-    assert J_b is not None and problem.stats["fit_linearizations"] <= fbp.GRADIENT_FIT_REFRESHES
-    if problem.stats["fit_linearizations"]:
-        assert not np.allclose(J_b, J0)
-    assert problem.stats["fit_step"] < 1e-9 and problem.stats["fit_steps"] <= fbp.GRADIENT_FIT_STEPS + 9
-    assert np.linalg.norm(jacobian(sol["x"]).T @ residual(sol["x"])) < 1e-7
 
 
 @pytest.mark.full
@@ -514,11 +459,10 @@ def test_interior_state_does_not_depend_on_its_start():
 
     results = []
     for seed in (None, near, perturbed):
-        for cfg in {model.cfg, model.cfg_trial}:  # a genuine cold or seeded solve: no memo, no hot restart
-            for cache in (im._LAST_SOLVE, im._HOT_CACHE, im._PERTURB_SEED, im._LAST_REFINED):
-                cache.pop(cfg, None)
+        for cache in (im._LAST_SOLVE, im._HOT_CACHE, im._PERTURB_SEED, im._LAST_REFINED):
+            cache.pop(model.cfg, None)  # a genuine cold or seeded solve: no memo, no hot restart
         model._linearization = None
-        rows, aux = model.evaluate(x, params, field, seed=seed, tight=True)
+        rows, aux = model.evaluate(x, params, field, seed=seed)
         J = model.linearize(x, aux, field)[0]
         results.append((np.asarray(rows), np.asarray(J), model.boundary_residual(aux[0], aux[2], field)))
         model._last_linearize = None
@@ -604,7 +548,7 @@ def test_vacuum_free_boundary_agrees_with_nestor():
     problem = opt.make_problem(model.fixed, objective_terms=[(lambda state, runtime: model.rows_at(
         state, runtime, field), 0.0, 1.0)], weight_semantics="residual", max_mode=model.max_mode,
         vary_major_radius=True, jacobian_batch_size=8, device=jax.devices()[0], restart_from=model.seed[0])
-    J = model.linearize(model.x0, (*model.seed, model.params0, True), field)[0]
+    J = model.linearize(model.x0, (*model.seed, model.params0), field)[0]
     J_upstream = np.asarray(problem.residual_jac(model.x0))
     assert np.linalg.norm(J - J_upstream) < 1e-9 * np.linalg.norm(J_upstream)
     again = fvc.solve_free_boundary_three_terms(inp, config, external_field=field, previous=fit)
@@ -632,17 +576,14 @@ def test_finite_beta_free_boundary_removes_the_sheet_current():
 
 @needs_vc
 @pytest.mark.full
-@pytest.mark.parametrize("labelling, label_weight, rounds", [
-    ("anchored", None, 0), ("equal_arc", 1e-3, 0), ("equal_arc", 1e-2, 0), ("flat_arc", None, 0),
-    ("flat_arc", None, 4)])
-def test_three_term_problem_gradients_match_resolved_differences(labelling, label_weight, rounds):
+@pytest.mark.parametrize("labelling, label_weight", [
+    ("anchored", None), ("equal_arc", 1e-3), ("flat_arc", None)])
+def test_three_term_problem_gradients_match_resolved_differences(labelling, label_weight):
     """Design gradients by the implicit function theorem of the boundary fit, against re-solved central
     differences, along a plasma coordinate (PHIEDGE) and a field coordinate (the coil currents), for the start
-    labelling, for equal arc at its default weight and at 1e-2 (tight fits: at a small weight the labelling is
-    pinned only to the fit's tolerance), for flat arc (the fit's flat directions held at the seed fit's arc
-    distribution, its rows zero there), and for flat
-    arc with the Newton gradient (``gradient_rounds``: the residual's curvature kept, at fits converged by
-    ``gradient_fit_xtol``, against differences of converged fits)."""
+    labelling, for equal arc at its default weight (tight fits: at a small weight the labelling is pinned only to
+    the fit's tolerance), and for flat arc (the fit's flat directions held at the seed fit's arc
+    distribution, its rows zero there)."""
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 13), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
     coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
     problem = ThreeTermsFreeBoundaryProblem.from_loss(
@@ -653,8 +594,7 @@ def test_three_term_problem_gradients_match_resolved_differences(labelling, labe
         parameter_quantities=(lambda state, runtime, x: opt.aspect_ratio(state, runtime) * (1 + x[1]),),
         config=vj.ThreeTermsConfig(labelling=labelling, label_weight=label_weight, nphi=24, ntheta=24,
                                    quadrature=(4 * 2 * 24, 48)),
-        boundary_ftol=1e-10, boundary_max_nfev=80, gradient_rounds=rounds,
-        gradient_fit_xtol=1e-6 if rounds else None)
+        boundary_ftol=1e-10, boundary_max_nfev=80)
     assert isinstance(problem, ThreeTermsFreeBoundaryProblem)
     x0 = problem.x0
     if labelling == "flat_arc":
@@ -668,13 +608,9 @@ def test_three_term_problem_gradients_match_resolved_differences(labelling, labe
     assert problem.boundary_residual(x0).sheet_current < 1e-2
     for k, h in ((0, 2e-3), (1, 2e-3)):
         e = h * np.eye(2)[k]
-        # with the Newton gradient its converged fits (the values after a gradient), as the gradient assumes
-        values = [np.r_[problem.value_and_grad(x0 + s * e)[0] if rounds else problem.fun(x0 + s * e),
-                        problem.constraint_values(x0 + s * e)] for s in (1, -1)]
+        values = [np.r_[problem.fun(x0 + s * e), problem.constraint_values(x0 + s * e)] for s in (1, -1)]
         fd = (values[0] - values[1]) / (2 * h)
         np.testing.assert_allclose(np.r_[grad[k], jac[:, k]], fd, rtol=2e-2, atol=1e-8 * max(1.0, abs(value)))
-    if rounds:
-        assert problem.stats["newton_products"] > 0
     problem.accept_x(x0 + 2e-3 * np.eye(2)[1])
     assert problem.accepted_step == 1
     problem.boundary_max_residual = 1e-12  # no fit gets there: the trial is no solution
@@ -697,7 +633,7 @@ def test_flat_arc_gauge_refresh_keeps_the_accepted_point():
         quantities=(opt.mean_iota,),
         config=vj.ThreeTermsConfig(labelling="flat_arc", nphi=24, ntheta=24, quadrature=(4 * 2 * 24, 48)),
         boundary_ftol=1e-10, boundary_max_nfev=80, gauge_refresh=1)
-    assert problem.stats["gauge_sets"] == 1 and problem.model.gauge_tau == 1.0
+    assert problem.stats["gauge_sets"] == 1
     x1 = problem.x0 + 2e-3 * np.eye(2)[1]
     before = np.r_[problem.fun(x1), problem.constraint_values(x1)]
     reference = np.asarray(problem.model._gauge[1])
@@ -751,87 +687,48 @@ def test_flat_arc_gauge_release_refits_without_the_gauge():
 
 @needs_vc
 @pytest.mark.full
-def test_promote_trials_evaluates_a_trial_as_accepting_it_leaves_it():
-    """``promote_trials``: a trial's values are those after its promotion (here a gauge release), accepting it changes
-    none of them, and a trial that is not taken leaves the accepted point's gauge and values as they were."""
+def test_flat_arc_follow_over_accepted_steps():
+    """Flat arc with follow, as the single stage runs it (``gauge_refresh=1, gauge_release=True``), over three
+    accepted steps: a trial is its no-label fit, so accepting it changes none of its values; the gauge is set again
+    at every accepted fit (its rows vanish there); the interface residuals stay at the fit's floor; a trial's values
+    are those of the no-label problem at the same design; and the gradient after the last step matches re-solved
+    central differences along both coordinates."""
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 13), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
     coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
-    problem = ThreeTermsFreeBoundaryProblem.from_loss(
-        inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(2),
-        field_from_parameters=lambda x: _scaled(coils, 1 + x[1]),
-        plasma_from_parameters=lambda params, x: replace(params, phiedge=params.phiedge * (1 + x[0])),
-        quantities=(opt.mean_iota,),
-        config=vj.ThreeTermsConfig(labelling="flat_arc", nphi=24, ntheta=24, quadrature=(4 * 2 * 24, 48)),
-        boundary_ftol=1e-10, boundary_max_nfev=80, gauge_refresh=1, gauge_release=True, promote_trials=True)
-    x0, gauge = problem.x0.copy(), problem.model._gauge
-    at_x0 = np.r_[problem.fun(x0), problem.constraint_values(x0)]
-    x1, x2 = x0 + 2e-3 * np.eye(2)[1], x0 + 1e-3 * np.eye(2)[1]
-    first = np.r_[problem.fun(x1), problem.constraint_values(x1)]
-    assert problem.stats["gauge_releases"] == 1 and problem.model._gauge is not gauge
-    assert problem.accepted_step == 0 and np.array_equal(problem.accepted.parameters, x0)
-    np.testing.assert_array_equal(np.r_[problem.fun(x0), problem.constraint_values(x0)], at_x0)  # x1 is not taken
-    assert problem.model._gauge is gauge and problem.stats["trials"] == 2
-    values = np.r_[problem.fun(x2), problem.constraint_values(x2)]
-    assert problem.stats["gauge_releases"] == 2
-    problem.accept_x(x2)
-    assert problem.accepted_step == 1 and problem.stats["gauge_releases"] == 2 and problem.gauge_share(x2) < 1e-8
-    value, grad = problem.value_and_grad(x2)
-    np.testing.assert_array_equal(np.r_[value, problem.constraint_values(x2)], values)
-    assert problem.stats["linearizations"] and np.all(np.isfinite(grad))
-    np.testing.assert_allclose(first, values, rtol=1e-2)
-    result = opt.minimize(problem, method="SLSQP", x0=x2, bounds=[(-5e-3, 5e-3)] * 2, options=dict(maxiter=2))
-    assert result.accepted_steps and problem.accepted_step == 1 + result.accepted_steps
-    np.testing.assert_array_equal(problem.fun(result.x), result.fun)
 
+    def build(labelling, **gauge):
+        return ThreeTermsFreeBoundaryProblem.from_loss(
+            inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(2),
+            field_from_parameters=lambda x: _scaled(coils, 1 + x[1]),
+            plasma_from_parameters=lambda params, x: replace(params, phiedge=params.phiedge * (1 + x[0])),
+            quantities=(opt.mean_iota,),
+            config=vj.ThreeTermsConfig(labelling=labelling, nphi=24, ntheta=24, quadrature=(4 * 2 * 24, 48)),
+            boundary_ftol=1e-10, boundary_max_nfev=80, **gauge)
 
-@needs_vc
-@pytest.mark.full
-def test_promote_trials_certifies_a_trial_whose_gauge_is_kept():
-    """``promote_trials`` with ``gradient_certify`` and no gauge change: the promoted trial is certified on the step
-    its fit converged to."""
-    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 13), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
-    coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
-    problem = ThreeTermsFreeBoundaryProblem.from_loss(
-        inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(2),
-        field_from_parameters=lambda x: _scaled(coils, 1 + x[1]),
-        plasma_from_parameters=lambda params, x: replace(params, phiedge=params.phiedge * (1 + x[0])),
-        config=vj.ThreeTermsConfig(labelling="flat_arc", nphi=24, ntheta=24, quadrature=(4 * 2 * 24, 48)),
-        boundary_ftol=1e-10, boundary_max_nfev=80, gradient_rounds=4, gradient_fit_xtol=1e-6, gradient_certify=10.0,
-        promote_trials=True)
-    x1 = problem.x0 + 2e-3 * np.eye(2)[1]
-    value = problem.fun(x1)
-    assert problem.stats["failed"] == 0 and problem.stats["fit_step"] <= 1e-5
-    problem.accept_x(x1)
-    assert problem.accepted_step == 1 and problem.value_and_grad(x1)[0] == value
-
-
-@needs_vc
-@pytest.mark.full
-def test_flat_arc_gauge_refresh_on_its_share():
-    """``gauge_max_share``: the gauge is set again only at an accepted fit where its rows' share of the cost
-    exceeds the bound, and vanishes there."""
-    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 13), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
-    coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
-    problem = ThreeTermsFreeBoundaryProblem.from_loss(
-        inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(2),
-        field_from_parameters=lambda x: _scaled(coils, 1 + x[1]),
-        plasma_from_parameters=lambda params, x: replace(params, phiedge=params.phiedge * (1 + x[0])),
-        config=vj.ThreeTermsConfig(labelling="flat_arc", nphi=24, ntheta=24, quadrature=(4 * 2 * 24, 48)),
-        boundary_ftol=1e-10, boundary_max_nfev=80, gauge_max_share=1.0)
-    x1 = problem.x0 + 2e-3 * np.eye(2)[1]
-    share = problem.gauge_share(x1)
-    assert 0.0 < share < 1.0
-    problem.accept_x(x1)  # below the bound: kept
-    assert problem.stats["gauge_sets"] == 1
-    problem.gauge_max_share = 0.5 * share
-    problem.model.gauge_tau = 1e-2  # set again on fewer directions: the rows' derivatives follow the new gauge
-    problem.accept_x(x1)  # above it: set again at x1's fit
-    assert problem.stats["gauge_sets"] == 2 and problem.gauge_share(x1) < 1e-8
-    state, params = problem.state(x1)
-    x = jnp.asarray(x1)
-    rows = problem.model.rows(state, params, problem.field(x))
-    assert problem._field_jvp(state, params, x, jnp.ones(2), problem.model._gauge).shape == rows.shape
-    problem.value_and_grad(x1 + 1e-3 * np.eye(2)[0])
+    problem = build("flat_arc", gauge_refresh=1, gauge_release=True)
+    values = lambda x: np.r_[problem.fun(x), problem.constraint_values(x)]  # noqa: E731
+    floor = problem.boundary_residual(problem.x0)
+    x = problem.x0
+    for step, dx in enumerate(([0.0, 2e-3], [2e-3, 1e-3], [-1e-3, 2e-3]), start=1):
+        problem.value_and_grad(x)  # as an optimizer: the accepted point's gradient before its next trial
+        x = x + np.asarray(dx)
+        before = values(x)
+        assert problem._cache[x.tobytes()]["released"]
+        assert not problem.accept_x(x)  # already its no-label fit: nothing re-fitted
+        np.testing.assert_allclose(values(x), before, rtol=1e-12, atol=0.0)
+        assert problem.stats["gauge_sets"] == step + 1 and problem.gauge_share(x) < 1e-8
+        residual = problem.boundary_residual(x)
+        for name in ("normal", "pressure", "sheet_current"):
+            assert getattr(residual, name) < 1.5 * max(getattr(floor, name), 1e-4)
+    assert "gauge_release_failures" not in problem.stats
+    free = build("none")  # the same design without any labelling rows
+    np.testing.assert_allclose(values(x), np.r_[free.fun(x), free.constraint_values(x)], rtol=1e-3)
+    _, grad = problem.value_and_grad(x)
+    jac = problem.constraint_jac(x)
+    for k, h in ((0, 2e-3), (1, 2e-3)):
+        e = h * np.eye(2)[k]
+        fd = (values(x + e) - values(x - e)) / (2 * h)
+        np.testing.assert_allclose(np.r_[grad[k], jac[:, k]], fd, rtol=2e-2, atol=1e-8 * max(1.0, abs(values(x)[0])))
 
 
 def _lp_beta0p5_profiles(inp):
@@ -887,7 +784,7 @@ def test_bootstrap_current_solved_with_the_free_boundary():
     fit = fvc.solve_free_boundary_three_terms(
         inp, vj.ThreeTermsConfig(labelling="anchored", bootstrap=profiles, jacobian_ftol=None), external_field=field)
     model = fit.model
-    state, mask, params, _ = fit.aux
+    state, mask, params = fit.aux
     assert fit.x.size == model.n_boundary + 3 + 24
     assert model.bootstrap_residual(state, params) < 1e-2
     assert fit.boundary_residual.sheet_current < 2e-3
@@ -904,7 +801,7 @@ def test_bootstrap_current_solved_with_the_free_boundary():
     J = model.linearize(fit.x, fit.aux, field)[0]
     for k in (0, model.n_boundary + 3, model.n_boundary + 15):
         h = 1e-5 * model.x_scale[k]
-        rows = [model.evaluate(fit.x + sign * h * np.eye(fit.x.size)[k], params, field, tight=True)[0]
+        rows = [model.evaluate(fit.x + sign * h * np.eye(fit.x.size)[k], params, field)[0]
                 for sign in (1, -1)]
         fd = (rows[0] - rows[1]) / (2 * h)
         assert np.linalg.norm(J[:, k] - fd) < 1e-4 * np.linalg.norm(fd), k
@@ -920,14 +817,20 @@ def test_fixed_boundary_bootstrap_model_matches_picard():
     model = fvc.ThreeTermsModel(inp, bootstrap=profiles, fixed_boundary=True)
     assert model.n_boundary == 0 and model.x0.size == 3 + 24  # three knots inside s_1, then the half mesh
     out = model.solve_boundary(model.params0, None, ftol=1e-10)
-    state, _, params, _ = out["aux"]
+    state, _, params = out["aux"]
     assert model.bootstrap_residual(state, params) < 1e-4
+    # a fixed point of the Picard map: Redl's current on the model's state is the model's current
+    runtime = model._im.runtime_from_params(params, model.cfg)
+    target = np.asarray(bs.HalfMeshCurrent(inp, profiles, 0).target(state, runtime))
+    np.testing.assert_allclose(np.asarray(params.ac_aux_f)[1:-1], target, rtol=0, atol=2e-4 * np.max(np.abs(target)))
+    # The Picard loop's own solves reach another converged state of the same deck at this resolution (both at the
+    # force tolerance; started at the model's state the loop's solver stays on it), so its current agrees to a few %.
     picard = bs.self_consistent_bootstrap(inp, profiles, 0, n_iter=40, tol=1e-6, relax=0.5, profile="half_mesh")
     np.testing.assert_allclose(np.asarray(params.ac_aux_f), picard.input.ac_aux_f,
-                               rtol=0, atol=2e-4 * np.max(np.abs(picard.input.ac_aux_f)))
+                               rtol=0, atol=4e-2 * np.max(np.abs(picard.input.ac_aux_f)))
     J = model.linearize(out["x"], out["aux"], None)[0]
     k, h = 5, 1e-5 * model.x_scale[5]
-    rows = [model.evaluate(out["x"] + sign * h * np.eye(out["x"].size)[k], params, None, tight=True)[0]
+    rows = [model.evaluate(out["x"] + sign * h * np.eye(out["x"].size)[k], params, None)[0]
             for sign in (1, -1)]
     fd = (rows[0] - rows[1]) / (2 * h)
     assert np.linalg.norm(J[:, k] - fd) < 1e-5 * np.linalg.norm(fd)

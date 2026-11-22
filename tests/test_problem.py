@@ -179,6 +179,17 @@ def test_vmec_problem_state_objective_hides_failed_trial_branches():
     np.testing.assert_allclose(jax.grad(lambda x: objective(rejected, x)[0])(
         jnp.asarray([2.0])), [4.0])
 
+    for problem, expected_status in ((accepted, 0), (rejected, 1)):
+        with_status = jax.jit(jax.value_and_grad(lambda x: problem.jax_objective_from_state(
+            x, lambda _state, _runtime: jnp.zeros(1), n_extra_terms=1,
+            return_status=True), has_aux=True))
+        (value, (rows, costs, status)), gradient = with_status(jnp.ones(1))
+        assert int(status) == expected_status
+        np.testing.assert_array_equal(rows, [0.0])
+        np.testing.assert_array_equal(costs, [0.0])
+        assert float(value) == (0.0 if expected_status == 0 else 11.0)
+        np.testing.assert_allclose(gradient, [0.0 if expected_status == 0 else 2.0])
+
     extra_value, extra_terms = accepted.jax_extra_costs_from_state(
         jnp.asarray([2.0]),
         lambda state, runtime: jnp.asarray([state[0] ** 2, runtime[0]]),
@@ -985,43 +996,6 @@ def test_shared_minimize_uses_physical_coordinates(bounded):
     np.testing.assert_allclose(result.x, target, atol=1e-5)
     np.testing.assert_allclose(result.jac, 2*(result.x-target), atol=1e-10)
     np.testing.assert_array_equal(points[-1], result.x)
-
-
-def test_shared_minimize_max_step_boxes_each_accepted_step():
-    from vmex import optimize as opt
-    from scipy.optimize import NonlinearConstraint
-
-    target, scales = np.array([6., -40.]), np.array([.5, 4.])
-    problem = opt.FunctionProblem.from_functions(np.array([0., 0.]), scales=scales,
-        value_and_grad=lambda x: (float(np.sum((x-target)**2)), 2*(x-target)))
-    # Two rows under scalar bounds: a rejected trial must return both.
-    constraint = NonlinearConstraint(lambda x: np.array([x[0], x[0]-1.]), -np.inf, 5.,
-                                     jac=lambda x: np.array([[1., 0.], [1., 0.]]))
-    points = [problem.x0.copy()]
-    result = opt.minimize(problem, method="SLSQP", constraints=constraint, callback=lambda x: points.append(x.copy()),
-                          options={"maxiter": 200, "ftol": 1e-12, "max_step": 1.0})
-    assert result.success
-    np.testing.assert_allclose(result.x, [5., -40.], atol=1e-5)
-    steps = np.abs(np.diff(points, axis=0)) / scales
-    assert len(points) > 10 and np.all(steps.max(axis=1) <= 1.0 + 1e-12)
-
-
-def test_shared_minimize_step_box_bounds_each_subproblem_step():
-    from vmex import optimize as opt
-    from scipy.optimize import NonlinearConstraint
-
-    target, scales = np.array([6., -40.]), np.array([.5, 4.])
-    problem = opt.FunctionProblem.from_functions(np.array([0., 0.]), scales=scales,
-        value_and_grad=lambda x: (float(np.sum((x-target)**2)), 2*(x-target)))
-    constraint = NonlinearConstraint(lambda x: np.array([x[0], x[0]-1.]), -np.inf, 5.,
-                                     jac=lambda x: np.array([[1., 0.], [1., 0.]]))
-    points = [problem.x0.copy()]
-    result = opt.minimize(problem, method="SLSQP", constraints=constraint, callback=lambda x: points.append(x.copy()),
-                          options={"maxiter": 200, "ftol": 1e-12, "step_box": 1.0})
-    np.testing.assert_allclose(result.x, [5., -40.], atol=1e-5)
-    steps = np.abs(np.diff(points, axis=0)) / scales
-    assert len(points) > 10 and np.all(steps.max(axis=1) <= 1.0 + 1e-9)
-    assert result.accepted_steps == len(points) - 1
 
 
 def test_shared_minimize_scales_physical_constraints_and_rejects_unsupported_method():

@@ -905,7 +905,9 @@ class VmecProblem(FunctionProblem):
             ``target`` is the value the term is driven toward, coerced with
             :func:`float`, so it must be scalar even when ``function``
             returns a vector — the same target is then subtracted from
-            every row.
+            every row.  Pass ``opt.at_least(x)``, ``opt.at_most(x)`` or
+            ``opt.between(a, b)`` instead for a one-sided or two-sided limit:
+            the rows are the distance outside the limit, zero while it holds.
 
             ``weight`` is a non-negative scalar, or a one-dimensional array
             with one entry per residual row of that term.  Under the
@@ -1110,7 +1112,8 @@ class VmecProblem(FunctionProblem):
         extra_costs: Callable[[Array, Any], Array],
         *,
         n_extra_terms: int,
-    ) -> tuple[Array, tuple[Array, Array]]:
+        return_status: bool = False,
+    ) -> tuple[Array, tuple[Array, ...]]:
         """Combine the VMEX least-squares cost with state-dependent costs.
 
         ``extra_costs(state, runtime)`` returns one already-weighted scalar
@@ -1119,6 +1122,8 @@ class VmecProblem(FunctionProblem):
         :func:`jax.value_and_grad`. Failed equilibrium trials receive the same
         smooth finite rejection cost as the base problem, so driver scripts do
         not need their own accepted/rejected branches.
+        With ``return_status=True``, append the equilibrium status to the
+        auxiliary tuple; zero means certified, including exact-zero residuals.
         """
         import jax.numpy as jnp
 
@@ -1156,7 +1161,8 @@ class VmecProblem(FunctionProblem):
             return (failure_value(x),
                     (jnp.zeros(residual_size), jnp.zeros(n_extra_terms)))
 
-        return _branch_on_status(status, accepted, rejected)
+        value, auxiliary = _branch_on_status(status, accepted, rejected)
+        return value, (*auxiliary, status) if return_status else auxiliary
 
     def jax_extra_costs_from_state(
         self,

@@ -306,10 +306,15 @@ def trace_boozer_field_lines(
     count = int(points_per_period) * int(num_periods) + 1
     length = 2.0 * np.pi * int(num_periods) / int(nfp)
     phi = jnp.linspace(0.0, length, count, dtype=dtype)
-    theta = alpha[None, :, None] + iota[:, None, None] * phi[None, None, :]
-    phase = theta[..., None] * xm - phi[None, None, :, None] * xn
-    bmag = jnp.einsum("sapm,sm->sap", jnp.cos(phase), bmnc_b)
-    bmag += jnp.einsum("sapm,sm->sap", jnp.sin(phase), sine)
+    # cos/sin(m alpha + (m iota - n) phi) split by the angle-addition formula:
+    # the trigonometry runs on (mode, phi) tables and alpha enters through one
+    # matrix product, instead of a trigonometric call per (alpha, phi, mode).
+    mode_phase = (xm * iota[:, None] - xn)[:, :, None] * phi[None, None, :]
+    cos_phase, sin_phase = jnp.cos(mode_phase), jnp.sin(mode_phase)
+    cosine_part = bmnc_b[:, :, None] * cos_phase + sine[:, :, None] * sin_phase
+    sine_part = sine[:, :, None] * cos_phase - bmnc_b[:, :, None] * sin_phase
+    bmag = (jnp.einsum("aj,sjp->sap", jnp.cos(alpha[:, None] * xm), cosine_part)
+            + jnp.einsum("aj,sjp->sap", jnp.sin(alpha[:, None] * xm), sine_part))
     current_factor = jnp.abs(
         jnp.atleast_1d(jnp.asarray(G_b, dtype=dtype))
         + iota * jnp.atleast_1d(jnp.asarray(I_b, dtype=dtype))
@@ -323,12 +328,13 @@ def trace_boozer_field_lines(
     }
 
 
-def bounce_action_from_boozer(*, pitch, max_wells=None, quadrature_order=64, **kwargs):
+def bounce_action_from_boozer(*, pitch, max_wells=None, quadrature_order=64,
+                              drift_integrands=None, **kwargs):
     """Trace Boozer field lines and evaluate :func:`bounce_action`."""
     trace = trace_boozer_field_lines(**kwargs)
     result = bounce_action(
         trace["bmag"], pitch, dl_dphi=trace["dl_dphi"],
         length=trace["length"], periodic=False, max_wells=max_wells,
-        quadrature_order=quadrature_order)
+        quadrature_order=quadrature_order, drift_integrands=drift_integrands)
     result.update(trace)
     return result

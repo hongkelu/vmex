@@ -26,7 +26,7 @@ initial boundary, weight `1e-2`) or `"none"`. Use a fixed singular quadrature
 `(4 nfp N, 2 N)` for an `N x N` interface grid. The edge pressure must vanish.
 `vj.solve_free_boundary_three_terms` is one solve, with `previous=` to continue
 after a coil change, and `vj.ThreeTermsFreeBoundaryProblem` is the
-single-stage problem with exact design gradients, for
+single-stage problem with its design gradients, for
 `vmex.optimize.minimize(problem, method="SLSQP")`. Any function of the
 equilibrium is a loss term or a constraint row (`quantities=`): at finite beta,
 as in VMEC, the pressure and current are inputs, the current profile is a design

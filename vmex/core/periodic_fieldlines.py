@@ -27,6 +27,7 @@ collocation residual; nothing differentiates through the Newton iterations.
 
 from __future__ import annotations
 
+import copy
 from typing import Any, Callable, NamedTuple
 
 import numpy as np
@@ -437,7 +438,9 @@ def exterior_field(external_field_from_parameters: Callable[[Any], Any], **optio
     from .extender import VmecExtender, _field_cartesian
 
     def parameters_of(data, x):
-        return VmecExtender.from_surface_data(data, **options)._direct_sources(), x
+        plasma = copy.copy(VmecExtender.from_surface_data(data, **options).plasma_field)
+        plasma._level_source_cache = {}  # its own: the sources of this (possibly traced) surface field
+        return plasma.level_sources(), x
 
     def field(parameters, xyz):
         sources, x = parameters

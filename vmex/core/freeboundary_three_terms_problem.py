@@ -7,19 +7,19 @@ Terms:
 
 - Label rows: rows that hold the boundary's poloidal labelling along the fit's nearly flat tangential directions.
   Only the labelling ``flat_arc`` has them.
-- Released fit: the trial's fit continued without the label rows.
-- Follow: the label rows are set again at each accepted step, where they vanish, and a trial is its released fit
-  where that lowers the interface cost for real (below ``RELEASE_KEEP`` of the cost under the label rows).
+- Follow: the label rows are set again at each accepted step, where they vanish.  A trial is its fit under them.
+- Released fit: a trial's fit continued without the label rows.  It is the trial only where the fit under the label
+  rows is not a free boundary (far from the accepted fit the rows can hold the boundary off it).
 - Anchor: the last linearized point, normally the last accepted one.  Its Jacobian starts the next trials' fits.
 - Polish: fresh-Jacobian rounds on a fit before its gradient, up to ``GRADIENT_POLISH_ROUNDS`` of them.
 
 One optimization step with label rows:
 
 1. Trial (``_solve``).  Predict the boundary to first order from the anchor.  Fit it under the label rows with the
-   anchor's Jacobian.  Continue from there to the released fit (``_released``).  It is the trial where it lowers
-   the interface cost below ``RELEASE_KEEP`` of the fit's.  Otherwise the trial is the fit under the label rows: a
-   smaller gain is the creep of a fit without label rows along its flat directions, which moves sensitive rows (a
-   Mercier row by 10 %) at no design step, and a line search cannot work across such a jump.
+   anchor's Jacobian: that fit is the trial, a smooth function of the design that returns the accepted fit at the
+   accepted design.  (A fit without label rows creeps along its flat directions, which moves sensitive rows, a
+   Mercier row by 10 %, at no design step: a line search cannot work across such a jump.)  Where that fit is not a
+   free boundary, the trial is its released fit (``_released``).
 2. Gradient (``_linearize``).  Polish the fit (``_fit_jacobian``, up to three rounds).  The trial's values become
    those of the polished fit.  Linearize it, differentiate every row by the implicit function theorem of the boundary
    fit, and make the point the anchor.
@@ -51,8 +51,6 @@ from .problem import FunctionProblem
 #: this fraction.  A trial's fit reuses an older Jacobian and can stop in a shallow valley 10-20 % above its minimum
 #: (QI at 12 x 12 modes: rounds of 9, 9, 3 and 2 %).
 GRADIENT_POLISH_FTOL, GRADIENT_POLISH_NFEV, GRADIENT_POLISH_KEEP, GRADIENT_POLISH_ROUNDS = 1e-4, 20, 0.95, 3
-#: A trial's released fit is kept when its interface cost is below this share of the cost under the label rows.
-RELEASE_KEEP = GRADIENT_POLISH_KEEP
 
 
 def _nonlinear_constraint(values, jacobian, lower, upper, scales):
@@ -111,7 +109,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     - ``fit_ftol``, ``fit_stalled``, ``fit_radius``, ``fit_max_nfev``: how the solved trials' fits ended, before any
       release (the ``reason`` of the model's fit).  ``fit_as_saved``: a restart's saved boundary taken as it is.
     - ``label_directions``: directions the label rows hold since they were last set.  ``label_sets``: times they were
-      set.  ``releases`` and ``release_failures``: released fits that solved (kept or not) and that failed.
+      set.  ``releases`` and ``release_failures``: released fits that solved and that failed.
     - ``polish_rounds``: polish rounds kept.  ``polish_gain``: the last polish round's relative cost reduction.
     """
 
@@ -142,8 +140,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
         With the labelling ``"flat_arc"`` the label rows are set at the seed's fit and the fit follows the design.
         The label rows are set again at every accepted fit (:meth:`accept_x`), where they vanish, so the labelling
-        does not accumulate and accepting a trial changes none of its values.  A trial is its released fit (no label
-        rows) where that lowers the interface cost for real, else its fit under the label rows.
+        does not accumulate and accepting a trial changes none of its values.  A trial is its fit under the label
+        rows, and its fit without them only where the first is not a free boundary.
         """
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities, *boundary_quantities)
         if not all(callable(f) for f in functions) or not (plasma_from_parameters is None
@@ -315,7 +313,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         x = np.asarray(x, dtype=float)
         params, field = self._params_at(jnp.asarray(x)), self.field(jnp.asarray(x))
         if self.model._labels is not None and not self._anchor and self.accepted is not None:
-            # follow: the accepted point's Jacobian starts every trial's released fit, whatever the caller asked first
+            # follow: the accepted point's Jacobian starts every trial's fit, whatever the caller asked first
             at = self.accepted.parameters
             self._linearize(at, self._cache[at.tobytes()])
         anchor, starts, J = self._anchor, [self._start], None
@@ -324,7 +322,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             dr = anchor["J_p"] @ dx[self._plasma] + np.asarray(self._field_jvp(
                 anchor["state"], anchor["params"], jnp.asarray(anchor["x"]), jnp.asarray(dx), self.model._labels))
             starts, J = [anchor["b"] - np.linalg.lstsq(anchor["J_b"], dr, rcond=None)[0], anchor["b"]], anchor["J_b"]
-        fit = None
+        fit = unfit = None
         if self._start is not None and key == self._start_key:  # a restart: the saved boundary as it is
             # the model's own cold solve of this boundary must not answer for the saved state (a converged
             # fixed-boundary state keeps the m=1 angle its path left it with, so the two differ at finite resolution)
@@ -346,23 +344,19 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                     continue
                 if not self._fits(fit, field):
                     self.stats["boundary_evaluations"] += fit["nfev"]
-                    fit = None  # the fit stalled away from the free boundary: try the next start
+                    unfit, fit = fit, None  # the fit stalled away from the free boundary: try the next start
                     continue
                 break
+        if fit is None and unfit is not None and self.model._labels is not None and anchor:
+            # far from the accepted fit its label rows can hold the boundary off the free boundary: the released fit
+            released = self._released(x, dict(unfit))
+            if released is not None:
+                self._cache[key] = released
+                return released
         if fit is None:
             return self._reject(key, "no three-term free boundary at this design point")
         self.stats["boundary_evaluations"] += fit["nfev"]
         self._count(f"fit_{fit.get('reason', 'as_saved')}")  # how the fit ended; the saved boundary has no reason
-        if self.model._labels is not None and anchor:
-            # the released fit from the fit under the label rows, where it lowers the interface cost for real: a
-            # smaller gain is the creep of a fit without label rows along its flat directions, which moves sensitive
-            # rows more than a short design step does (a trial at the accepted design must return the accepted fit)
-            released = self._released(x, dict(fit))
-            n, k = self.model._n_interface, self.model._labels[0].shape[0]
-            interface = np.delete(fit["rows"], np.s_[n:n + k])
-            if released is not None and released["rows"] @ released["rows"] < RELEASE_KEEP * (interface @ interface):
-                self._cache[key] = released
-                return released
         state, mask, params_b = fit["aux"]
         try:  # rows with solves of their own (a vacuum iota, say) can fail where the boundary fit did not
             values = np.asarray(self._rows(state, params_b, jnp.asarray(x)))

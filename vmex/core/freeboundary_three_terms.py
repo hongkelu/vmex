@@ -1001,8 +1001,8 @@ class ThreeTermsModel:
                                        ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
             self._radius = out["radius"]
             close = target_cost is None or 0.5 * out["rows"] @ out["rows"] <= target_cost
-            if (out["accepted"] or out["converged"]) and close:
-                return dict(out, jacobian=jacobian, njev=0)
+            if (out["accepted"] or out["converged"] or out["reason"] == "stalled") and close:
+                return dict(out, jacobian=jacobian, njev=0)  # stalled at a close fit: nothing left on this Jacobian
             # One fresh Jacobian where the steps stalled, and the same steps again, before a full trust region.
             J1, _, _, aux1 = self.linearize(out["x"], out["aux"], field)
             again = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), out["x"], out["rows"], aux1, J1,
@@ -1088,7 +1088,10 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
     The stop.  ``reason`` is one of:
 
     - ``"ftol"``: a relative cost change of ``ftol`` that the linear model predicted;
-    - ``"stalled"``: three steps in a row each gained under 5% (the Jacobian is stale there);
+    - ``"stalled"``: three steps in a row each gained under 5% (the Jacobian is stale there).  Such steps are not
+      taken, so the fit ends where its last real gain left it and a fit started there again returns the same point
+      (taken, they made every fit creep three steps along the nearly flat directions, and a single-stage trial at
+      the accepted design moved a Mercier row by 5 %);
     - ``"radius"``: the radius fell below 1e-4 of the Gauss-Newton step;
     - ``"max_nfev"``: the evaluations ran out.
 
@@ -1156,7 +1159,7 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
         # not the Jacobian's fault: a failed step at x itself, or a step on a fresh J that gained what was predicted
         excused = (at_x and cost_new >= cost) or (fresh and rho > LM_GOOD_GAIN)
         slow = slow + 1 if small_gain and not excused else 0
-        if cost_new < cost:
+        if cost_new < cost and not slow:  # a slow step is not taken: a fit started where this one ends, ends there
             x, (r, aux), accepted, last = x_new, got, accepted + 1, length
             if cost - cost_new <= ftol * cost and rho > LM_POOR_GAIN:  # a small gain the linear model foresaw
                 converged, reason = True, "ftol"

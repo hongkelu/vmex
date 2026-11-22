@@ -46,11 +46,12 @@ from .errors import TrialRejected, VmecError
 from .freeboundary_three_terms import BoundaryResidual, ThreeTermsConfig, ThreeTermsModel
 from .problem import FunctionProblem
 
-#: The gradient's polish of a trial: rounds of its own (fresh) Jacobian and steps to this relative cost change in at
-#: most this many evaluations; a round is kept, and followed by another (three at most), when it cuts the cost below
-#: this fraction.  A trial's fit reuses an older Jacobian and can stop in a shallow valley 10-20 % above its minimum
-#: (QI at 12 x 12 modes: rounds of 9, 9, 3 and 2 %).
-GRADIENT_POLISH_FTOL, GRADIENT_POLISH_NFEV, GRADIENT_POLISH_KEEP, GRADIENT_POLISH_ROUNDS = 1e-4, 20, 0.95, 3
+#: The gradient's polish of a trial: rounds of its own (fresh) Jacobian and a trial's fit from it.  Every round is
+#: kept, so that a trial at the accepted design returns the accepted fit (a round that is dropped is a step the next
+#: trial takes: a jump at no design step).  A round is followed by another, three at most, when it cuts the cost
+#: below this fraction.  A trial's fit reuses an older Jacobian and can stop in a shallow valley 10-20 % above its
+#: minimum (QI at 12 x 12 modes: rounds of 9, 9, 3 and 2 %).
+GRADIENT_POLISH_KEEP, GRADIENT_POLISH_ROUNDS = 0.95, 3
 
 
 def _nonlinear_constraint(values, jacobian, lower, upper, scales):
@@ -110,7 +111,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
       release (the ``reason`` of the model's fit).  ``fit_as_saved``: a restart's saved boundary taken as it is.
     - ``label_directions``: directions the label rows hold since they were last set.  ``label_sets``: times they were
       set.  ``releases`` and ``release_failures``: released fits that solved and that failed.
-    - ``polish_rounds``: polish rounds kept.  ``polish_gain``: the last polish round's relative cost reduction.
+    - ``polish_rounds``: polish rounds that were followed by another.  ``polish_gain``: the last polish round's relative cost reduction.
     """
 
     @classmethod
@@ -415,18 +416,20 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
         J = linearized()
         for _ in range(GRADIENT_POLISH_ROUNDS):
-            try:
+            try:  # a trial's own fit, from this Jacobian: what a trial at this design would return
                 polished = model.solve_boundary(
-                    self._params_at(xj), field, x0=sol["x"], jacobian=J[:, :nb], ftol=GRADIENT_POLISH_FTOL,
-                    max_nfev=GRADIENT_POLISH_NFEV)
+                    self._params_at(xj), field, x0=sol["x"], jacobian=J[:, :nb], ftol=self.boundary_ftol,
+                    max_nfev=self.boundary_max_nfev)
             except (VmecError, RuntimeError):  # no polish: the fit's own Jacobian stands
                 break
             self.stats["boundary_evaluations"] += polished["nfev"]
             gain = 1.0 - (polished["rows"] @ polished["rows"]) / (sol["rows"] @ sol["rows"])
             self.stats["polish_gain"] = float(gain)  # the last round's relative cost reduction
-            if gain <= 1.0 - GRADIENT_POLISH_KEEP:
+            state, mask, params = polished["aux"]
+            sol.update(x=polished["x"], aux=polished["aux"], state=state, mask=mask, params=params,
+                       rows=polished["rows"], values=np.asarray(self._rows(state, params, xj)))
+            if gain <= 1.0 - GRADIENT_POLISH_KEEP:  # kept, on this Jacobian: the next trials start from it
                 break
-            sol.update(x=polished["x"], aux=polished["aux"])
             J = linearized()
             self._count("polish_rounds")
         sol["J"] = J

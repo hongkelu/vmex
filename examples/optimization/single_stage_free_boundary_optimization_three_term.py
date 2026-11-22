@@ -166,15 +166,15 @@ MERCIER_S_MIN = 0.2
 # Margin of the Mercier floor. SLSQP holds a row only to its tolerance: DMerc stays strictly positive (and its
 # value near the floor changes with resolution, so a design held closer can lose it there).
 MERCIER_MARGIN = 0.02
-# Smooth rows.  A hard extreme changes the surface or point it reads within a short step, and its gradient sees
-# only the one it reads now: with the hard Mercier minimum the QH run at 8x8 modes crawled from step 180 (a row
-# predicted to rise by 0.1 fell by 5.4 at a step of 2e-3).  The Mercier floor is held on MERCIER_BANDS radial
-# bands, in each DMerc averaged with weights exp(-DMerc / MERCIER_SMOOTH) (smooth_d_merc); the coil-plasma
-# clearance is the distances' mean weighted by exp(-d / CLEARANCE_SMOOTH) [m] (with the hard nearest pair the QH run
-# at 8x8 took 3.4 trials a step: at its bound several pairs tie, and a step makes another the nearest), and the
-# mirror ratio's Bmax, Bmin are |B| averaged with weights exp(+-|B| / MIRROR_SMOOTH) [T].
+# Smooth rows.  A hard extreme (the smallest DMerc, the nearest coil-plasma pair, the largest |B|) switches the
+# surface or point it reads within a short step while its gradient sees only the one it reads now, and at a bound
+# several of them tie: the gradient is then wrong at every step size.  So the Mercier floor is held on MERCIER_BANDS
+# radial bands, in each DMerc averaged with weights exp(-DMerc / MERCIER_SMOOTH) (smooth_d_merc), the coil-plasma
+# clearance is the distances' mean weighted by exp(-d / CLEARANCE_SMOOTH), and the mirror ratio's Bmax, Bmin are
+# |B| averaged with weights exp(+-|B| / MIRROR_SMOOTH).
 MERCIER_SMOOTH, MERCIER_BANDS = 0.01, 4
-CLEARANCE_SMOOTH = MIRROR_SMOOTH = 5e-4
+CLEARANCE_SMOOTH = 5e-4             # m
+MIRROR_SMOOTH = 5e-4                # T
 CURRENT_IOTA_WEIGHT = 0.0          # > 0: the loss adds w/2 iota_I^2 (current_iota), shrinking the bootstrap current
 ASPECT_RANGE = (4.9, 5.1)
 RADIUS_TARGET, RADIUS_TOLERANCE, RADIUS_MARGIN = 1.0, 0.01, 0.001
@@ -974,7 +974,6 @@ def constraint_rows(inp, chart, redl):
     from essos.surfaces import surfacerzfourier_from_boundary
     from vmex import optimize as opt
 
-    clearance_smooth, mirror_smooth = CLEARANCE_SMOOTH, MIRROR_SMOOTH
     mercier_row = lambda state, runtime: smooth_d_merc(state, runtime, MERCIER_SMOOTH, MERCIER_BANDS)  # noqa: E731
     # rows of the trial's fitted boundary (rbc, zbs), differentiated through the boundary fit
     vacuum = opt.vacuum_iota(inp)
@@ -982,7 +981,7 @@ def constraint_rows(inp, chart, redl):
 
     def clearance(rbc, zbs, x):
         surface = surfacerzfourier_from_boundary(rbc, zbs, inp.nfp, nphi=SURFACE_GRID[0], ntheta=SURFACE_GRID[1])
-        return limits.surface_clearance(chart.coils_from_x(x), surface, smooth=clearance_smooth)
+        return limits.surface_clearance(chart.coils_from_x(x), surface, smooth=CLEARANCE_SMOOTH)
 
     def aspect(state, runtime, x):
         return opt.aspect_ratio(state, runtime)
@@ -998,7 +997,7 @@ def constraint_rows(inp, chart, redl):
             Row("b_axis", "state", opt.axis_field_strength, B0 - b_width, B0 + b_width, B_AXIS_TOLERANCE)]
     if MIRROR_LIMIT:
         rows.append(Row("mirror_ratio", "state",
-                        lambda state, runtime: opt.mirror_ratio(state, runtime, smooth=mirror_smooth),
+                        lambda state, runtime: opt.mirror_ratio(state, runtime, smooth=MIRROR_SMOOTH),
                         -np.inf, MIRROR_LIMIT - MIRROR_MARGIN, MIRROR_LIMIT))
     if IOTA_CEILING:  # scaled by the floor, as the floor row
         rows.append(Row("max_abs_iota", "state", max_abs_iota, -np.inf, IOTA_CEILING - IOTA_MARGIN, IOTA_FLOOR))
@@ -1135,7 +1134,7 @@ def label_speed_ratio(params, nfp):
 
 def boundary_jacobian_condition(problem):
     """Condition number of the last boundary Jacobian (columns scaled to unit norm), None before one."""
-    J_b = problem._anchor.get("J_b") if isinstance(problem._anchor, dict) else None
+    J_b = problem._anchor.get("J_b")
     if J_b is None:
         return None
     J_b = np.asarray(J_b)
@@ -1221,7 +1220,7 @@ def step_logger(args, out, inp, chart, problem, rows, vacuum, constraints, start
                    step_box=None if last["x"] is None else float(np.max(np.abs(x - last["x"]) / problem.scales)),
                    step_seconds=now - last["time"], elapsed_seconds=now - started, **problem.stats,
                    peak_gpu_gib=(jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30)
-        optimizing = args.steps > problem.accepted_step or problem.accepted_step  # not a re-solve alone
+        optimizing = args.steps > 0 or problem.accepted_step > 0  # not a re-solve alone
         if optimizing:
             try:  # a diagnostic
                 row["kkt_residual"], row["kkt_rows"] = stationarity(problem, constraints, x)
@@ -1302,8 +1301,7 @@ def main(argv=None):
     log_step()
     result = opt.minimize(problem, x0=problem.accepted.parameters, method="SLSQP", constraints=constraints,
                           callback=lambda x: log_step(),
-                          options=dict(maxiter=args.steps - problem.accepted_step, ftol=OPTIMIZER_FTOL,
-                                       restart_on_rejection=True))
+                          options=dict(maxiter=args.steps - problem.accepted_step, ftol=OPTIMIZER_FTOL))
     save_point(out, problem, chart, "")
     summary = dict(accepted_steps=problem.accepted_step, success=bool(result.success), message=str(result.message),
                    stop_reason=getattr(result, "stop_reason", None),

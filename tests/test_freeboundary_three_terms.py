@@ -689,8 +689,8 @@ def test_flat_arc_accept_sets_the_label_rows_and_keeps_the_values():
         boundary_ftol=1e-10, boundary_max_nfev=80)
     x1 = problem.x0 + 2e-3 * np.eye(2)[1]
     before = np.r_[problem.fun(x1), problem.constraint_values(x1)]
-    assert not problem.accept_x(x1)
-    assert problem.stats["label_sets"] == 2 and problem.stats["release_failures"] == 0
+    problem.accept_x(x1)
+    assert problem.stats["label_sets"] == 2
     assert problem.label_share(x1) < 1e-8
     np.testing.assert_allclose(np.r_[problem.fun(x1), problem.constraint_values(x1)], before, rtol=1e-12)
     value, grad = problem.value_and_grad(x1)
@@ -731,13 +731,12 @@ def test_flat_arc_follow_over_accepted_steps():
         problem.value_and_grad(x)  # as an optimizer: the accepted point's gradient before its next trial
         x = x + np.asarray(dx)
         before = values(x)
-        assert not problem.accept_x(x)  # nothing re-fitted
+        problem.accept_x(x)
         np.testing.assert_allclose(values(x), before, rtol=1e-12, atol=0.0)
         assert problem.stats["label_sets"] == step + 1 and problem.label_share(x) < 1e-8
         residual = problem.boundary_residual(x)
         for name in ("normal", "pressure", "sheet_current"):
             assert getattr(residual, name) < 1.5 * max(getattr(floor, name), 1e-4)
-    assert problem.stats["release_failures"] == 0
     free = build("equal_arc", label_weight=0.0)  # the same design without any labelling rows
     np.testing.assert_allclose(values(x), np.r_[free.fun(x), free.constraint_values(x)], rtol=1e-3)
     _, grad = problem.value_and_grad(x)

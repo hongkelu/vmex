@@ -395,6 +395,10 @@ def test_failed_rows_reject_the_trial(monkeypatch):
     with pytest.raises(TrialRejected):
         problem.fun(problem.x0 + 0.01)
     assert problem.stats["rejection_reasons"] == {"host equilibrium solve failed": 1}
+    # a row whose own solve did not converge returns NaN instead of raising: rejected too
+    monkeypatch.setattr(problem, "_rows", lambda *args: rows(*args) * np.nan)
+    assert problem._solve(problem.x0 + 0.02) is None
+    assert problem.stats["rejection_reasons"]["a row is not finite at this design point"] == 1
     monkeypatch.setattr(problem, "_rows", rows)
     problem.close()
 

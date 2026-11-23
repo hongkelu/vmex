@@ -365,7 +365,7 @@ def test_restart_from_a_final_boundary_keeps_the_values():
                         (first.equilibrium_from_x(x).wout, 1e-8)):
         restart = ThreeTermsFreeBoundaryProblem.from_loss(inp, loss, x, boundary_start=start, **options)
         np.testing.assert_allclose(np.r_[restart.fun(x), restart.constraint_values(x)], values, rtol=rtol)
-        assert restart.stats["boundary_evaluations"] == 1
+        assert restart.stats.get("fit_as_saved") == 1 and restart.stats["polish_rounds"] == 0  # kept, and not moved
 
 
 def _small_problem(**options):

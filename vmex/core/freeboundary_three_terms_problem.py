@@ -296,18 +296,21 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             dr = anchor["J_p"] @ dx[self._plasma] + np.asarray(self._field_jvp(
                 anchor["state"], anchor["params"], jnp.asarray(anchor["x"]), jnp.asarray(dx), self.model._labels))
             starts, J = [anchor["b"] - anchor["response"] @ dr, anchor["b"]], anchor["J_b"]
-        fit = None
+        fit, why = None, []  # why: each start's failure, for the rejection reason
         if self._start is not None and key == self._start_key:  # a restart: the saved boundary as it is
             # the model's own cold solve of this boundary must not answer for the saved state (a converged
             # fixed-boundary state keeps the m=1 angle its path left it with, so the two differ at finite resolution)
             for memo in (self.model._im._LAST_SOLVE, self.model._im._LAST_REFINED):
                 memo.pop(self.model.cfg, None)
             evaluated = self.model.evaluate(self._start, params, field, seed=self._start_state)
-            if evaluated is not None:
+            if evaluated is None:
+                why.append("the saved boundary has no certified equilibrium")
+            else:
                 fit = dict(x=self._start, rows=evaluated[0], aux=evaluated[1], nfev=1)
                 if not self._fits(fit, field):
                     self.stats["boundary_evaluations"] += 1
                     fit = None
+                    why.append("the saved boundary is outside boundary_max_residual")
         if fit is None:
             for start in starts:
                 if anchor:  # the radius the anchor's last polish started with: a trial at the anchor's design
@@ -316,15 +319,17 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                     fit = self.model.solve_boundary(params, field, x0=start, jacobian=J, ftol=self.boundary_ftol,
                                                     max_nfev=self.boundary_max_nfev,
                                                     target_cost=TRIAL_COST_LIMIT * anchor["cost"] if anchor else None)
-                except (VmecError, RuntimeError):  # no equilibrium on the way: try the next start
+                except (VmecError, RuntimeError) as error:  # no equilibrium on the way: try the next start
+                    why.append(str(error))
                     continue
                 if not self._fits(fit, field):
                     self.stats["boundary_evaluations"] += fit["nfev"]
                     fit = None  # the fit stalled away from the free boundary: try the next start
+                    why.append("the fit stalled outside boundary_max_residual")
                     continue
                 break
         if fit is None:
-            return self._reject(key, "no three-term free boundary at this design point")
+            return self._reject(key, "no three-term free boundary at this design point: " + "; ".join(why))
         self.stats["boundary_evaluations"] += fit["nfev"]
         self.stats["linearizations"] += fit.get("njev", 0)
         self._count(f"fit_{fit.get('reason', 'as_saved')}")  # how the fit ended; the saved boundary has no reason
@@ -347,7 +352,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
     def _reject(self, key, reason):
         self.stats["failed"] += 1
-        kind = re.sub(r"[-+]?\d[\d.]*(e[-+]?\d+)?", "#", reason)[:80]  # the reason without its numbers
+        kind = re.sub(r"[-+]?\d[\d.]*(e[-+]?\d+)?", "#", reason)[:200]  # the reason without its numbers
         self.stats["rejection_reasons"][kind] = self.stats["rejection_reasons"].get(kind, 0) + 1
         self._cache[key], self._rejections[key] = None, reason
         return None

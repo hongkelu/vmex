@@ -6,7 +6,8 @@ the boundary fit of its design.  It is a solution when every interface residual 
 Terms:
 
 - Label rows: rows that hold the boundary's poloidal labelling along the fit's nearly flat tangential directions.
-  Only the labelling ``flat_arc`` has them.
+  Only the labelling ``flat_arc`` at a weight above its default 0 has them (by default flat arc has no rows, and
+  the steps below need none of their parts).
 - Follow: the label rows are set again at the start of every polish round, where they vanish, and so at each
   accepted step.  A trial's fit starts under the accepted point's rows.
 - Anchor: the last linearized point, normally the last accepted one.  Its Jacobian starts the next trials' fits.

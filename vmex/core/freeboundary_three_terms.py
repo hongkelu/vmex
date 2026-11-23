@@ -264,11 +264,15 @@ ACCEPTED_RESIDUAL = 1e-2
 
 #: Default labelling-row weight of each labelling: the smallest that keeps the fit well posed for the anchored
 #: labelling, and for equal arc the weight that biases the interface rows least while it still pins the labelling
-#: on the benchmark designs; for flat arc the same weak weight: its rows must pin the labelling only, since the
-#: directions they hold are nearly flat, not free (at 1e-1 a single-stage fit that follows them ends 20 times
-#: further from the free boundary in B.n).  These are the accepted labellings.  A labelling at weight 0 has no
-#: labelling rows: the model names it ``"none"``.
-LABEL_WEIGHTS = {"flat_arc": 1e-3, "equal_arc": 1e-3, "anchored": 1e-2}
+#: on the benchmark designs.  Flat arc has no rows by default (weight 0): its labelling is the fit's own, and the
+#: interface rows determine the boundary by themselves (on a QA state at 8 x 8 modes their boundary Jacobian has
+#: condition number 3.4e3, no direction below 1e-4 of the largest).  Rows at 1e-3 stiffened the fit's ~40 weak
+#: directions, along which the Mercier rows move strongly: the fit crawled toward the free boundary (20-150
+#: fresh-Jacobian rounds a trial) and stopped short of it where its gain threshold cut the crawl, a point that
+#: depended on where it started.  On an X-point design without them: B.n 5.1e-4 -> 2.7e-4 from the same start, the
+#: objective 36 % higher (it had been held off the free boundary), one trial and about two minutes a step.  A
+#: labelling at weight 0 has no labelling rows: the model names it ``"none"``.
+LABEL_WEIGHTS = {"flat_arc": 0.0, "equal_arc": 1e-3, "anchored": 1e-2}
 
 
 class _LabelledField(NamedTuple):
@@ -292,11 +296,11 @@ class ThreeTermsConfig:
     ``labelling``
         Fixes the boundary's poloidal labelling, which the interface conditions leave free.
 
-        - ``"flat_arc"`` (the default) holds the arc-length distribution of a reference fit along the fit's flat,
-          tangential directions on the current surface (:meth:`ThreeTermsModel.set_label_rows`): the labelling of the
-          fit without label rows, held along the directions that fit leaves nearly free.
-          :func:`solve_free_boundary_three_terms` sets the rows at its fit without them.  The single-stage problem
-          sets them at every accepted step.
+        - ``"flat_arc"`` (the default) is the labelling of the fit without label rows: at its default weight 0 it
+          has no rows (:data:`LABEL_WEIGHTS`), and the boundary is the interface rows' own least squares.  At a
+          weight above 0 it holds that labelling's arc-length distribution along the fit's flat, tangential
+          directions (:meth:`ThreeTermsModel.set_label_rows`): :func:`solve_free_boundary_three_terms` sets the rows
+          at its fit without them, and the single-stage problem at the start of every polish round.
         - ``"equal_arc"`` asks for equal arc length on every toroidal cut of the current surface, and a zero phase of
           its ``m = 1`` part.
         - ``"anchored"`` penalizes the tangential offset of the boundary points from a reference boundary, the

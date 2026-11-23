@@ -20,9 +20,8 @@ res = result.three_terms.boundary_residual   # RMS B.n, pressure balance and she
 ```
 
 The interface conditions leave the boundary's poloidal labelling free;
-`labelling` fixes it: `"flat_arc"` (the default: the arc-length distribution of
-the fit without label rows, held along the fit's flat, tangential directions,
-weight `1e-3`), `"equal_arc"` (equal arc length on every toroidal cut of the
+`labelling` fixes it: `"flat_arc"` (the default: the fit's own labelling, no
+label rows), `"equal_arc"` (equal arc length on every toroidal cut of the
 current surface, weight `1e-3`) or `"anchored"` (the tangential offset from the
 initial boundary, weight `1e-2`). Use a fixed singular quadrature
 `(4 nfp N, 2 N)` for an `N x N` interface grid. The edge pressure must vanish.
@@ -40,20 +39,24 @@ QA at 0.5% beta).
 ## The label rows and their weight
 
 The label rows only choose the boundary's poloidal labelling; `label_weight`
-scales them against the interface rows.
+scales them against the interface rows. `flat_arc` has none by default
+(weight 0): the boundary is the interface conditions' own least squares.
 
-- `label_weight=0` gives a solve with no label rows at all. It works for a
-  single solve: the fit then stops somewhere along the nearly flat directions
-  the interface conditions leave, a few millimetres from another fit of the
-  same case.
-- For a single solve the weight changes nothing that matters. W7-X in its 50
-  non-planar coils at 5.4 % beta, 10 x 10 modes: B.n/|B| rms 1.05e-3 and iota
-  0.842 / 0.855 / 0.936 (axis / mid / edge) with no label rows, with `flat_arc`
-  at weight `1e-1` and at `1e-3`.
-- In the single-stage problem the weight matters. A trial there is its fit
-  under the label rows, which are set again at every accepted fit (a trial that
-  was re-fitted without them did not return the accepted fit at the accepted
-  design: its Mercier row was off by 10 %, and the optimizer's line search
-  stalled). The rows hold directions that are nearly flat, not free, so they
-  must be weak: at `1e-1` B.n of a QA run rose to 2.4e-3, at the default `1e-3`
-  it stays at 1-4e-4 (8 x 8 modes) and 1-5e-5 (12 x 12).
+- The interface conditions determine the boundary by themselves. On a QA state
+  at 8 x 8 modes their boundary Jacobian has condition number 3.4e3, with no
+  direction below 1e-4 of the largest, so the fit has one minimum.
+- About 40 of its directions are weak (1e-2 to 3e-4 of the largest), and the
+  Mercier rows move strongly along them. Label rows at `1e-3` stiffened exactly
+  these: a single-stage fit crawled toward the free boundary over 20-150
+  fresh-Jacobian rounds and stopped short of it, at a point that depended on
+  where it started. That cost hours a step at 12 x 12 modes and made the
+  optimizer stall near an optimum.
+- Without them, on an X-point design from the same start, B.n fell from 5.1e-4
+  to 2.7e-4 and the objective rose 36 %: the rows had held the boundary off
+  the free boundary. Steps took one trial and about two minutes.
+- For a single solve the weight changes little. W7-X in its 50 non-planar coils
+  at 5.4 % beta, 10 x 10 modes: B.n/|B| rms 1.05e-3 and iota 0.842 / 0.855 /
+  0.936 (axis / mid / edge) with no label rows, and with `flat_arc` at weight
+  `1e-1` and at `1e-3`.
+- `equal_arc` keeps its weight `1e-3`: its rows ask for an absolute target,
+  equal arc length, and do not vanish at the fit.

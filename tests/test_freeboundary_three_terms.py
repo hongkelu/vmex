@@ -96,7 +96,7 @@ def test_three_terms_config_validates_and_follows_the_deck(tmp_path):
     assert vj.ThreeTermsConfig().labelling == "flat_arc"
     weights = {name: vj.ThreeTermsConfig(labelling=name).resolved_label_weight
                for name in ("anchored", "equal_arc", "flat_arc")}
-    assert weights == {"anchored": 1e-2, "equal_arc": 1e-3, "flat_arc": 1e-3}
+    assert weights == {"anchored": 1e-2, "equal_arc": 1e-3, "flat_arc": 0.0}  # flat arc: no label rows
     options = vj.ThreeTermsConfig(labelling="equal_arc", label_weight=0.0).model_options()
     assert options["labelling"] == "none" and options["label_weight"] == 0.0
     # at weight 0 every labelling is the no-label model
@@ -627,7 +627,8 @@ def test_flat_arc_labels_refresh_keeps_the_accepted_point():
         field_from_parameters=lambda x: _scaled(coils, 1 + x[1]),
         plasma_from_parameters=lambda params, x: replace(params, phiedge=params.phiedge * (1 + x[0])),
         quantities=(opt.mean_iota,),
-        config=vj.ThreeTermsConfig(labelling="flat_arc", nphi=24, ntheta=24, quadrature=(4 * 2 * 24, 48)),
+        config=vj.ThreeTermsConfig(labelling="flat_arc", label_weight=1e-3, nphi=24, ntheta=24,
+                                   quadrature=(4 * 2 * 24, 48)),
         boundary_ftol=1e-10, boundary_max_nfev=80)
     assert problem.stats["label_sets"] == 1
     x1 = problem.x0 + 2e-3 * np.eye(2)[1]
@@ -666,7 +667,8 @@ def test_flat_arc_accept_sets_the_label_rows_and_keeps_the_values():
         field_from_parameters=lambda x: _scaled(coils, 1 + x[1]),
         plasma_from_parameters=lambda params, x: replace(params, phiedge=params.phiedge * (1 + x[0])),
         quantities=(opt.mean_iota,),
-        config=vj.ThreeTermsConfig(labelling="flat_arc", nphi=24, ntheta=24, quadrature=(4 * 2 * 24, 48)),
+        config=vj.ThreeTermsConfig(labelling="flat_arc", label_weight=1e-3, nphi=24, ntheta=24,
+                                   quadrature=(4 * 2 * 24, 48)),
         boundary_ftol=1e-10, boundary_max_nfev=80)
     x1 = problem.x0 + 2e-3 * np.eye(2)[1]
     before = np.r_[problem.fun(x1), problem.constraint_values(x1)]
@@ -704,7 +706,7 @@ def test_flat_arc_follow_over_accepted_steps():
                                        quadrature=(4 * 2 * 24, 48)),
             boundary_ftol=1e-10, boundary_max_nfev=80, **options)
 
-    problem = build("flat_arc")
+    problem = build("flat_arc", 1e-3)  # the label-row machinery, at an explicit weight
     values = lambda x: np.r_[problem.fun(x), problem.constraint_values(x)]  # noqa: E731
     floor = problem.boundary_residual(problem.x0)
     x = problem.x0
@@ -729,7 +731,7 @@ def test_flat_arc_follow_over_accepted_steps():
     kept = values(x)
     wout = problem.equilibrium_from_x(x).wout
     final = vj.VmecInput.from_wout(wout)
-    problem = build("flat_arc", deck=replace(inp, rbc=final.rbc, zbs=final.zbs), x0=x, boundary_start=wout)
+    problem = build("flat_arc", 1e-3, deck=replace(inp, rbc=final.rbc, zbs=final.zbs), x0=x, boundary_start=wout)
     np.testing.assert_allclose(values(x), kept, rtol=1e-3)
     assert problem.stats["label_sets"] == 1 and problem.label_share(x) < 1e-8
 

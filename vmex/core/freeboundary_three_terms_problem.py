@@ -9,18 +9,17 @@ Terms:
   Only the labelling ``flat_arc`` has them.
 - Follow: the label rows are set again at each accepted step, where they vanish.  A trial is its fit under them.
 - Anchor: the last linearized point, normally the last accepted one.  Its Jacobian starts the next trials' fits.
-- Polish: fresh-Jacobian rounds on a fit before its gradient, until one takes no step (``GRADIENT_POLISH_ROUNDS``
-  at most).
+- Polish: fresh-Jacobian rounds on every trial's fit before its values are used, until one takes no step
+  (``GRADIENT_POLISH_ROUNDS`` at most, steps that gain ``1 - POLISH_SLOW_COST``).
 
 One optimization step with label rows:
 
 1. Trial (``_solve``).  Predict the boundary to first order from the anchor.  Fit it under the label rows with the
-   anchor's Jacobian: that fit is the trial, a smooth function of the design that returns the accepted fit at the
-   accepted design.  (A fit without label rows slides along its nearly flat directions, which moves sensitive rows
-   at no design step: a jump a line search cannot work across.)
-2. Gradient (``_linearize``).  Polish the fit (``_fit_jacobian``): fresh-Jacobian rounds until one takes no step.
-   The trial's values become those of the polished fit.  Linearize it, differentiate every row by the implicit
-   function theorem of the boundary fit, and make the point the anchor.
+   anchor's Jacobian, and polish it (``_fit_jacobian``): that fit is the trial, a smooth function of the design that
+   returns the accepted fit at the accepted design.  (A fit without label rows slides along its nearly flat
+   directions, which moves sensitive rows at no design step: a jump a line search cannot work across.)
+2. Gradient (``_linearize``).  Take the polished fit's Jacobian, differentiate every row by the implicit function
+   theorem of the boundary fit, and make the point the anchor.
 3. Accept (``accept_x``).  Set the label rows again at the accepted fit (``_set_label_rows``), where they vanish
    (no value changes), and clear the anchor.  The next trial first linearizes the accepted
    point under the new label rows, which sets the anchor again.
@@ -44,13 +43,14 @@ from .errors import TrialRejected, VmecError
 from .freeboundary_three_terms import BoundaryResidual, ThreeTermsConfig, ThreeTermsModel
 from .problem import FunctionProblem
 
-#: The gradient's polish of a trial: rounds of a fresh Jacobian at the fit and a trial's fit from it, until a round
-#: takes no step (at most this many).  Then the Jacobian is the one at the fit, as the gradient needs, and a trial
-#: at the accepted design, which starts there with that Jacobian, returns the accepted fit: no jump at no design
-#: step.  A trial's fit reuses an older Jacobian and can stop in a shallow valley above its minimum (QI at 12 x 12
-#: modes: rounds of 9, 9, 3 and 2 %); a fit only takes steps that gain ``1 - LM_SLOW_COST`` of its cost or more,
-#: which ends the rounds.
-GRADIENT_POLISH_ROUNDS = 4
+#: The polish of every trial, before its values are used: rounds of a fresh Jacobian at the fit and the fit continued
+#: from it, until a round takes no step (at most GRADIENT_POLISH_ROUNDS).  Its steps are taken while they gain
+#: 1 - POLISH_SLOW_COST of the cost, finer than a trial fit's 1 - LM_SLOW_COST: a trial fit stops in a shallow valley
+#: along the nearly flat directions (QA at 8 x 8 modes: 1.4 mm and 12 % of the objective short of the converged free
+#: boundary, with or without the label rows), and the polish brings it to within about 1 %.  The Jacobian is then
+#: the one at the fit, as the gradient needs, and a trial near an accepted point, which starts there, finds no step
+#: the polish did not: the trial map stays continuous, and accepting a point changes none of its values.
+GRADIENT_POLISH_ROUNDS, POLISH_SLOW_COST = 10, 0.999
 #: A trial's fit on the anchor's Jacobian that ends above this multiple of the anchor's fit cost (twice its residual)
 #: is not near the anchor: it continues on a fresh Jacobian.
 TRIAL_COST_LIMIT = 4.0
@@ -322,12 +322,13 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self.stats["linearizations"] += fit.get("njev", 0)
         self._count(f"fit_{fit.get('reason', 'as_saved')}")  # how the fit ended; the saved boundary has no reason
         state, mask, params_b = fit["aux"]
-        try:  # rows with solves of their own (a vacuum iota, say) can fail where the boundary fit did not
-            values = np.asarray(self._rows(state, params_b, jnp.asarray(x)))
-        except (VmecError, RuntimeError) as error:
+        sol = dict(fit, state=state, mask=mask, params=params_b)
+        try:  # the polished fit's values: rows with solves of their own (a vacuum iota, say) can fail here too
+            self._fit_jacobian(x, sol)
+        except (VmecError, RuntimeError, TrialRejected) as error:
             return self._reject(key, str(error))
-        self._cache[key] = dict(fit, state=state, mask=mask, params=params_b, values=values)
-        return self._cache[key]
+        self._cache[key] = sol
+        return sol
 
     def _fits(self, fit, field):
         """Every interface residual of ``fit`` within ``boundary_max_residual`` (when set)."""
@@ -378,10 +379,10 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         J = linearized()
         for _ in range(GRADIENT_POLISH_ROUNDS):
             sol["radius"] = model._radius  # the radius this round starts with: the trials near x start with it too
-            try:  # a trial's own fit, from the Jacobian at the fit: what a trial at this design would return
+            try:  # the fit continued from the Jacobian at the fit, on POLISH_SLOW_COST
                 polished = model.solve_boundary(
                     self._params_at(xj), field, x0=sol["x"], jacobian=J[:, :n_fit], ftol=self.boundary_ftol,
-                    max_nfev=self.boundary_max_nfev)
+                    max_nfev=self.boundary_max_nfev, slow_cost=POLISH_SLOW_COST)
             except (VmecError, RuntimeError):  # no polish: the fit's own Jacobian stands
                 break
             self.stats["boundary_evaluations"] += polished["nfev"]

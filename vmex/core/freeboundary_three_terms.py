@@ -797,6 +797,7 @@ class ThreeTermsModel:
         self._linearization = None
         self._last_linearize = None  # (key, extra key, result, _linearization) of the latest linearize
         self._radius = None  # the boundary steps' trust radius, carried from one solve to the next
+        self._label_programs = None  # set_label_rows' compiled arc Jacobian and label-row columns
 
     def stored_bands(self, params, state, mask):
         """The config's block factorization at ``state`` for a pullback of a system too large to build one in its
@@ -859,7 +860,8 @@ class ThreeTermsModel:
         held directions: the labelling's arc distribution held at ``x``'s, as far as those directions reach.  No
         point positions are held, so the surface moves freely and its labelling cannot degenerate.  Zero at ``x`` (an
         absolute equal-arc target costs the interface accuracy: the flat directions are weak, not free).
-        The rows keep their number when fewer directions are held (zero rows), so a refresh recompiles nothing.
+        There is one row per candidate direction (every direction but the stiffest), the unheld ones zero, so a
+        refresh, which the single-stage problem does at every polish round, recompiles nothing.
         """
         if self.labelling != "flat_arc":
             raise ValueError("set_label_rows needs labelling='flat_arc'")
@@ -877,20 +879,26 @@ class ThreeTermsModel:
         candidates = Vt[1:]  # every direction but the stiffest; the normal share picks the tangential ones
         tangential = lambda u: u @ A @ u < LABEL_NORMAL_SHARE ** 2 * (u @ B @ u)  # noqa: E731
         held = [u for u in candidates if tangential(u / norms)]
+        if self._label_programs is None:  # compiled once: the rows are set again at every polish round
+            self._label_programs = (
+                jax.jit(lambda z: _jacfwd(self._boundary_arc, z)),
+                jax.jit(lambda params, batch, weights, reference: jax.lax.map(lambda t: jax.jvp(
+                    lambda p: self._label_rows(p, weights, reference), (params,), (t,))[1], batch, batch_size=32)))
+        arc_jacobian, label_columns = self._label_programs
         if held:
-            L = _jacfwd(self._boundary_arc, jnp.asarray(xb, dtype=float))
+            L = arc_jacobian(jnp.asarray(xb, dtype=float))
             M = np.linalg.qr(np.asarray(L) @ (np.array(held).reshape(-1, nb) / norms).T)[0]
             weights = self.label_weight * M.T
-            weights = np.vstack([weights, np.zeros((max(old - weights.shape[0], 0), weights.shape[1]))])
+            # as many rows as there are candidate directions, the unused ones zero: the rows' shape never changes
+            weights = np.vstack([weights, np.zeros((nb - 1 - weights.shape[0], weights.shape[1]))])
             self._labels = (jnp.asarray(weights), self._boundary_arc(jnp.asarray(xb)))
         elif self._labels is not None:
             self._labels = (jnp.zeros_like(self._labels[0]), self._boundary_arc(jnp.asarray(xb)))
         if last is not None and last[2][0] is jacobian:  # keep that linearization, its label rows swapped: they
             # depend on the boundary alone, so their columns are the new rows' derivatives along its tangents
             key, extra_key, (columns, dz, batch, aux), linearization = last
-            new = np.zeros((0, columns.shape[1])) if self._labels is None else np.asarray(jax.lax.map(
-                lambda t: jax.jvp(lambda p: self._label_rows(p, *self._labels), (aux[2],), (t,))[1], batch,
-                batch_size=32)).T  # in batches, as _jacfwd
+            new = (np.zeros((0, columns.shape[1])) if self._labels is None
+                   else np.asarray(label_columns(aux[2], batch, *self._labels)).T)  # in batches, as _jacfwd
             i = self._n_interface
             columns = np.vstack([columns[:i], new, columns[i + old:]])
             self._last_linearize = (key, extra_key, (columns, dz, batch, aux), linearization)

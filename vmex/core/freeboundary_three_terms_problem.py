@@ -118,8 +118,9 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     - ``linearizations``: Jacobians taken, for the gradients (their polish rounds included) and inside the fits.
     - ``fit_ftol``, ``fit_stalled``, ``fit_radius``, ``fit_max_nfev``: how the solved trials' fits ended (the
       ``reason`` of the model's fit).  ``fit_as_saved``: a restart's saved boundary taken as it is.
-    - ``label_directions``: directions the label rows hold since they were last set.  ``label_sets``: times they were
-      set.
+    - ``label_directions``: directions the label rows hold since they were last set at an accepted point.
+      ``label_sets``: times they were set at an accepted point, the seed included (the polish also sets them at the
+      start of every round).
     - ``polish_rounds``: polish rounds that moved the fit (each one more Jacobian).  ``polish_capped``: polishes
       still moving after ``GRADIENT_POLISH_ROUNDS``.  ``polish_gain``: the last moving round's relative cost reduction.
     """
@@ -254,7 +255,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self.accepted = None  # no accepted point during the seed solve
         if self._solve(x0) is None:
             raise VmecError(f"the seed design has no three-term free boundary: {self._rejections[x0.tobytes()]}")
-        if model.labelling == "flat_arc" and model._labels is None:  # the seed fit's flat directions
+        if model.labelling == "flat_arc":  # the seed fit's rows, as at an accepted step (its polish set the same)
             self._set_label_rows(x0)
         self.accepted, self.accepted_step = _AcceptedPoint(x0.copy()), 0
         super().__init__(x0, names=names, scales=scales, fun=self._value, value_and_grad=self._value_gradient,

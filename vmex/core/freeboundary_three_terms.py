@@ -974,7 +974,7 @@ class ThreeTermsModel:
         return columns, dz, batch, aux
 
     def solve_boundary(self, params, field, *, x0=None, jacobian=None, ftol=1e-4, jacobian_ftol=1e-2, max_nfev=60,
-                       target_cost=None, refresh_on_stall=False, verbose=0):
+                       target_cost=None, refresh_on_stall=False, slow_cost=None, verbose=0):
         """K = 0 boundary for ``params`` and ``field``.
 
         The solve has two phases.  The fresh-Jacobian fit is a trust region that takes a new Jacobian at every step
@@ -982,18 +982,21 @@ class ThreeTermsModel:
         (:func:`_levenberg_marquardt`) and run to ``ftol``.
 
         With ``jacobian`` (from a nearby solve) the reused-Jacobian steps start from ``x0``, and the result is theirs.
-        If they neither reduce the cost nor converge, or end above ``target_cost``, they run again on one fresh
-        Jacobian taken where they stopped.  If that still ends above ``target_cost``, both phases run from there.
+        If they neither reduce the cost, converge nor stall, or end above ``target_cost``, they run again on one
+        fresh Jacobian taken where they stopped.  If that still ends above ``target_cost``, both phases run from there.
 
         Without ``jacobian`` both phases run: the fresh-Jacobian fit, then the reused-Jacobian steps on its last
         Jacobian (see :func:`solve_free_boundary_three_terms`).  With ``refresh_on_stall``, reused-Jacobian steps that
-        stalled on a stale Jacobian retry once on a fresh one there.
+        stalled on a stale Jacobian retry once on a fresh one there.  ``slow_cost`` is the reused-Jacobian steps'
+        threshold (:func:`_levenberg_marquardt`, default ``LM_SLOW_COST``): a step is taken only if it leaves the cost
+        below this fraction.
 
         Returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask, params), ``nfev``, ``njev``,
-        ``accepted`` and ``converged``.
+        ``accepted``, ``converged``, ``reason`` and ``radius`` (of the reused-Jacobian steps).
         """
         import scipy.optimize
 
+        slow_cost = LM_SLOW_COST if slow_cost is None else slow_cost
         x = np.asarray(self.x0 if x0 is None else x0, dtype=float)
         nfev = njev = 0
         if jacobian is not None:
@@ -1001,7 +1004,8 @@ class ThreeTermsModel:
             if first is None:
                 raise RuntimeError("the warm-start boundary has no certified equilibrium")
             out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), x, *first, jacobian,
-                                       ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
+                                       ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius,
+                                       slow_cost=slow_cost)
             self._radius = out["radius"]
             close = target_cost is None or 0.5 * out["rows"] @ out["rows"] <= target_cost
             if (out["accepted"] or out["converged"] or out["reason"] == "stalled") and close:
@@ -1010,7 +1014,7 @@ class ThreeTermsModel:
             J1, _, _, aux1 = self.linearize(out["x"], out["aux"], field)
             again = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), out["x"], out["rows"], aux1, J1,
                                          ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius,
-                                         fresh=True)
+                                         fresh=True, slow_cost=slow_cost)
             self._radius = again["radius"]
             again["nfev"] += out["nfev"] - 1  # its first evaluation is the last of ``out``
             if target_cost is None or 0.5 * again["rows"] @ again["rows"] <= target_cost:
@@ -1045,13 +1049,14 @@ class ThreeTermsModel:
             nfev += 1
         J = jac(fit.x) if memo.get("jacobian") is None or memo.get("jkey") != fit.x.tobytes() else memo["jacobian"]
         out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), fit.x, memo["rows"], memo["aux"], J,
-                                   ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
+                                   ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius,
+                                   slow_cost=slow_cost)
         self._radius = out["radius"]
         if refresh_on_stall and not out["converged"]:  # stalled on a stale Jacobian: one fresh one there
             J, _, _, aux = self.linearize(out["x"], out["aux"], field)
             again = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), out["x"], out["rows"], aux, J,
                                          ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius,
-                                         fresh=True)
+                                         fresh=True, slow_cost=slow_cost)
             self._radius, njev = again["radius"], njev + 1
             # still stalled on a fresh Jacobian: the steps gain nothing the rows can resolve, the point is
             # stationary (DESC's least squares counts relative gains below its ftol, 1e-2, as converged)
@@ -1074,7 +1079,8 @@ LM_SLOW_STEPS = 3        # this many slow steps in a row stop the fit as stalled
 LM_BISECTIONS = 60       # bisections of log(damping) for the step of the radius' length: 2^-60 of the bracket
 
 
-def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, radius=None, fresh=False):
+def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, radius=None, fresh=False,
+                         slow_cost=LM_SLOW_COST):
     """Reused-Jacobian steps: trust-region Gauss-Newton steps on one fixed Jacobian ``J`` from ``x``.
 
     ``evaluate(x)`` returns ``(r, aux)``, or ``None`` where the solve fails.  Each step costs one evaluation.  These
@@ -1160,7 +1166,7 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
         elif rho > LM_GOOD_GAIN and length > LM_AT_RADIUS * radius:
             radius = LM_GROW * radius
         at_x = fresh and not accepted  # J is still the Jacobian at x
-        small_gain = cost_new > LM_SLOW_COST * cost
+        small_gain = cost_new > slow_cost * cost
         # not the Jacobian's fault: a failed step at x itself, or a step on a fresh J that gained what was predicted
         excused = (at_x and cost_new >= cost) or (fresh and rho > LM_GOOD_GAIN)
         slow = slow + 1 if small_gain and not excused else 0

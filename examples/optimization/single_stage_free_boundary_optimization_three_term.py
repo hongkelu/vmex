@@ -106,6 +106,7 @@ COIL_CURRENT_STEP = 0.06           # coordinate scale of the relative coil-curre
 
 # Run settings; the recipe cases set theirs after the case table.
 BETA = 0.0                         # plasma beta (BETA_DEFINITION), a fraction
+PRESSURE_SHAPE = (1.0, -1.0)       # pressure ~ this power series in s (AM), scaled to BETA
 BOOTSTRAP = False                  # kinetic profiles and a self-consistent bootstrap current (needs BETA > 0)
 # The current is an input, as in VMEC (CURRENT_KNOTS values and CURTOR are design variables), held self-consistent
 # by a constraint row, instead of solved with every equilibrium (BOOTSTRAP_IN_SOLVE).
@@ -249,6 +250,22 @@ elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta"):
         # Stellaris (Lion et al. 2025): iota 0.86 on axis to 0.98 at the edge, below the 4/4 islands
         IOTA_FLOOR, IOTA_CEILING, BOOTSTRAP_MODEL = 0.86, 0.98, "dkx"
         COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.08, 0.15
+elif CASE == "qiw7x-beta":
+    # QI from W7-X: the standard configuration's boundary scaled to R0 = 1 m (examples/data/input.qiw7x_beta2p5, the
+    # pressure shape of simsopt's finite-beta W7-X deck, zero net current), and our own stage-two coils for it at
+    # 2.5 % beta: 5 per half period, order 12, fitted (cases/qa-pwo-lhk8-13/modular_coils_alm.py) under Gil et al.
+    # (2026) Stellaris No.1 limits scaled with the minor radius, length and curvature 1.5x, mean squared curvature
+    # 2x, no force limit (B.n/|B| 0.28 % mean on the seed).
+    INPUT_FILE, COILS_FILE, PRESSURE_SHAPE = DATA / "input.qiw7x_beta2p5", DATA / "ESSOS_coils_qiw7x_beta.json", (
+        1.0, -79317.3617 / 50000, 29317.3617 / 50000)
+    COIL_ORDER, HELICITY, TARGET_NAME, ASPECT_RANGE = 12, None, "QI", (10.65, 10.85)
+    # W7-X's iota 0.87 on axis to 0.95 at the edge, between the 5/6 and 5/5 islands
+    IOTA_FLOOR, IOTA_CEILING = 0.84, 0.99
+    # Working limits, not tight ones: those coils as the driver samples them (768 points per coil; the fit's 120
+    # missed peaks), with room: largest curvature 38.6 /m, coil-coil 0.047 m; the coil-plasma distance 25 % below
+    # the fit's 0.099 m, the hardest coil limit to hold.
+    LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT = 2.79, 40.0, 120.0
+    COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.045, 0.075
 elif CASE != "ellipse5":
     raise ValueError(f"unknown COIL_CASE {CASE!r}")
 if CASE.endswith("-tok"):
@@ -274,14 +291,19 @@ if COIL_LIMIT_FACTORS is not None:
     LENGTH_LIMIT = COIL_LIMIT_FACTORS[0] * 2 * math.pi * _radius
     CURVATURE_LIMIT, MSC_LIMIT = COIL_LIMIT_FACTORS[1] / _radius, COIL_LIMIT_FACTORS[2] / _radius**2
 # The recipe cases: 2.5% beta with the bootstrap current, a coil-limit row per sample point.
+if COIL_CASE == "qiw7x-beta-merc":  # zero net current, as W7-X: no bootstrap row
+    BETA, COIL_POINT_ROWS, SAVE_EVERY, MAX_ITERATIONS = 0.025, True, 5, 60000
+    DESIGN_STEP_SCALE, MERCIER_MARGIN = 1.0, 0.1
 if COIL_CASE in ("qa4-beta-merc", "qh4-beta-A8-merc", "qi6-beta-A8", "qi6-beta-A8-merc"):
     BETA, BOOTSTRAP, COIL_POINT_ROWS, SAVE_EVERY = 0.025, True, True, 5
     if COIL_CASE == "qa4-beta-merc":
         VACUUM_IOTA_FLOOR, IOTA_CEILING, CURRENT_CONSTRAINT = 0.31, 0.495, True
+        COIL_SURFACE_DISTANCE_LIMIT = 0.15  # 25 % below the 0.20 m its coil limits are scaled with
     elif COIL_CASE == "qh4-beta-A8-merc":
         DESIGN_STEP_SCALE, MAX_ITERATIONS, CURRENT_CONSTRAINT, MERCIER_MARGIN = 1.0, 20000, True, 0.1
         # Gil et al. (2026) Table III scaled to R0 = 1 m, its length per half period over the three coils
         LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT = 2.81, 10.0, 13.5
+        COIL_SURFACE_DISTANCE_LIMIT = 0.11  # 25 % below the case's 0.15 m: the hardest coil limit to hold
     else:
         DESIGN_STEP_SCALE, MAX_ITERATIONS, FIXED_CURRENT = 1.0, 60000, True
         # Gil et al. (2026) Table IV scaled to R0 = 1 m, its length per half period over the four coils
@@ -890,7 +912,7 @@ def build_seed(args, out):
     elif BOOTSTRAP:
         inp, fixed, redl = bootstrap_input(inp, BETA, "gpu")
     else:
-        inp, fixed = finite_beta_input(inp, BETA, "gpu")
+        inp, fixed = finite_beta_input(inp, BETA, "gpu", am=PRESSURE_SHAPE)
     if args.modes and (args.restart is not None or args.seed_run is not None):  # a saved run at another resolution
         inp = inp.change_resolution(mpol=args.modes[0], ntor=args.modes[1])
     saved_ns = int(np.asarray(inp.ns_array)[-1])

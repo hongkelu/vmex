@@ -341,6 +341,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             self._fit_jacobian(x, sol)
         except (VmecError, RuntimeError, TrialRejected) as error:
             return self._reject(key, str(error))
+        if not np.all(np.isfinite(sol["values"])):  # a row whose own solve did not converge reports NaN
+            return self._reject(key, "a row is not finite at this design point")
         self._cache[key] = sol
         return sol
 

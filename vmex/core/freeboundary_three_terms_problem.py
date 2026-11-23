@@ -7,21 +7,24 @@ Terms:
 
 - Label rows: rows that hold the boundary's poloidal labelling along the fit's nearly flat tangential directions.
   Only the labelling ``flat_arc`` has them.
-- Follow: the label rows are set again at each accepted step, where they vanish.  A trial is its fit under them.
+- Follow: the label rows are set again at the start of every polish round, where they vanish, and so at each
+  accepted step.  A trial's fit starts under the accepted point's rows.
 - Anchor: the last linearized point, normally the last accepted one.  Its Jacobian starts the next trials' fits.
 - Polish: fresh-Jacobian rounds on every trial's fit before its values are used, until one takes no step
   (``GRADIENT_POLISH_ROUNDS`` at most, steps that gain ``1 - POLISH_SLOW_COST``).
 
 One optimization step with label rows:
 
-1. Trial (``_solve``).  Predict the boundary to first order from the anchor.  Fit it under the label rows with the
-   anchor's Jacobian, and polish it (``_fit_jacobian``): that fit is the trial, a smooth function of the design that
-   returns the accepted fit at the accepted design.  (A fit without label rows slides along its nearly flat
-   directions, which moves sensitive rows at no design step: a jump a line search cannot work across.)
+1. Trial (``_solve``).  Predict the boundary to first order from the anchor.  Fit it under the accepted point's label
+   rows with the anchor's Jacobian, and polish it (``_fit_jacobian``), each round under rows set at its start: that
+   fit is the trial, a smooth function of the design that returns the accepted fit at the accepted design.  (A fit
+   stopped short of that, or left under rows set elsewhere, slides along its nearly flat directions when it is
+   continued, which moves sensitive rows at no design step: a jump a line search cannot work across.)
 2. Gradient (``_linearize``).  Take the polished fit's Jacobian, differentiate every row by the implicit function
    theorem of the boundary fit, and make the point the anchor.
-3. Accept (``accept_x``).  Set the label rows again at the accepted fit (``_set_label_rows``), where they vanish
-   (no value changes), and clear the anchor.  The next trial first linearizes the accepted
+3. Accept (``accept_x``).  Set the label rows again at the accepted fit (``_set_label_rows``): the rows its last
+   polish round ended under, as they depend on the fit alone, so its re-polish takes no step and no value changes.
+   Clear the anchor.  The next trial first linearizes the accepted
    point under the new label rows, which sets the anchor again.
 
 Without label rows a trial is its fit from the anchor, and accepting it changes nothing but the cache.  Without an
@@ -44,13 +47,17 @@ from .freeboundary_three_terms import BoundaryResidual, ThreeTermsConfig, ThreeT
 from .problem import FunctionProblem
 
 #: The polish of every trial, before its values are used: rounds of a fresh Jacobian at the fit and the fit continued
-#: from it, until a round takes no step (at most GRADIENT_POLISH_ROUNDS).  Its steps are taken while they gain
-#: 1 - POLISH_SLOW_COST of the cost, finer than a trial fit's 1 - LM_SLOW_COST: a trial fit stops in a shallow valley
-#: along the nearly flat directions (QA at 8 x 8 modes: 1.4 mm and 12 % of the objective short of the converged free
-#: boundary, with or without the label rows), and the polish brings it to within about 1 %.  The Jacobian is then
-#: the one at the fit, as the gradient needs, and a trial near an accepted point, which starts there, finds no step
-#: the polish did not: the trial map stays continuous, and accepting a point changes none of its values.
-GRADIENT_POLISH_ROUNDS, POLISH_SLOW_COST = 10, 0.999
+#: from it, until a round takes no step.  Its steps are taken while they gain 1 - POLISH_SLOW_COST of the cost, finer
+#: than a trial fit's 1 - LM_SLOW_COST: a trial fit stops in a shallow valley along the nearly flat directions (QA at
+#: 8 x 8 modes: 1.4 mm and 12 % of the objective short of the converged free boundary, with or without the label
+#: rows), and the polish brings it to within about 1 %.  With ``flat_arc`` each round first sets the label rows at its
+#: start (follow), so a polished fit is converged under the rows set at itself.  The Jacobian is then the one at the
+#: fit, as the gradient needs, and a trial near an accepted point, which starts there, finds no step the polish did
+#: not: the trial map stays continuous, and accepting a point changes none of its values.  A polish must end that way:
+#: one stopped while still moving (at 10 rounds, the earlier limit, on restarts and early steps) made a trial at the
+#: accepted design move on, and the line search shrink to zero steps.  GRADIENT_POLISH_ROUNDS only guards against a
+#: polish that never ends (the longest seen took 37 rounds).
+GRADIENT_POLISH_ROUNDS, POLISH_SLOW_COST = 100, 0.999
 #: A trial's fit on the anchor's Jacobian that ends above this multiple of the anchor's fit cost (twice its residual)
 #: is not near the anchor: it continues on a fresh Jacobian.
 TRIAL_COST_LIMIT = 4.0
@@ -111,8 +118,9 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     - ``linearizations``: Jacobians taken, for the gradients (their polish rounds included) and inside the fits.
     - ``fit_ftol``, ``fit_stalled``, ``fit_radius``, ``fit_max_nfev``: how the solved trials' fits ended (the
       ``reason`` of the model's fit).  ``fit_as_saved``: a restart's saved boundary taken as it is.
-    - ``label_directions``: directions the label rows hold since they were last set.  ``label_sets``: times they were
-      set.
+    - ``label_directions``: directions the label rows hold since they were last set at an accepted point.
+      ``label_sets``: times they were set at an accepted point, the seed included (the polish also sets them at the
+      start of every round).
     - ``polish_rounds``: polish rounds that moved the fit (each one more Jacobian).  ``polish_capped``: polishes
       still moving after ``GRADIENT_POLISH_ROUNDS``.  ``polish_gain``: the last moving round's relative cost reduction.
     """
@@ -247,7 +255,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self.accepted = None  # no accepted point during the seed solve
         if self._solve(x0) is None:
             raise VmecError(f"the seed design has no three-term free boundary: {self._rejections[x0.tobytes()]}")
-        if model.labelling == "flat_arc" and model._labels is None:  # the seed fit's flat directions
+        if model.labelling == "flat_arc":  # the seed fit's rows, as at an accepted step (its polish set the same)
             self._set_label_rows(x0)
         self.accepted, self.accepted_step = _AcceptedPoint(x0.copy()), 0
         super().__init__(x0, names=names, scales=scales, fun=self._value, value_and_grad=self._value_gradient,
@@ -289,18 +297,21 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             dr = anchor["J_p"] @ dx[self._plasma] + np.asarray(self._field_jvp(
                 anchor["state"], anchor["params"], jnp.asarray(anchor["x"]), jnp.asarray(dx), self.model._labels))
             starts, J = [anchor["b"] - anchor["response"] @ dr, anchor["b"]], anchor["J_b"]
-        fit = None
+        fit, why = None, []  # why: each start's failure, for the rejection reason
         if self._start is not None and key == self._start_key:  # a restart: the saved boundary as it is
             # the model's own cold solve of this boundary must not answer for the saved state (a converged
             # fixed-boundary state keeps the m=1 angle its path left it with, so the two differ at finite resolution)
             for memo in (self.model._im._LAST_SOLVE, self.model._im._LAST_REFINED):
                 memo.pop(self.model.cfg, None)
             evaluated = self.model.evaluate(self._start, params, field, seed=self._start_state)
-            if evaluated is not None:
+            if evaluated is None:
+                why.append("the saved boundary has no certified equilibrium")
+            else:
                 fit = dict(x=self._start, rows=evaluated[0], aux=evaluated[1], nfev=1)
                 if not self._fits(fit, field):
                     self.stats["boundary_evaluations"] += 1
                     fit = None
+                    why.append("the saved boundary is outside boundary_max_residual")
         if fit is None:
             for start in starts:
                 if anchor:  # the radius the anchor's last polish started with: a trial at the anchor's design
@@ -309,15 +320,17 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                     fit = self.model.solve_boundary(params, field, x0=start, jacobian=J, ftol=self.boundary_ftol,
                                                     max_nfev=self.boundary_max_nfev,
                                                     target_cost=TRIAL_COST_LIMIT * anchor["cost"] if anchor else None)
-                except (VmecError, RuntimeError):  # no equilibrium on the way: try the next start
+                except (VmecError, RuntimeError) as error:  # no equilibrium on the way: try the next start
+                    why.append(str(error))
                     continue
                 if not self._fits(fit, field):
                     self.stats["boundary_evaluations"] += fit["nfev"]
                     fit = None  # the fit stalled away from the free boundary: try the next start
+                    why.append("the fit stalled outside boundary_max_residual")
                     continue
                 break
         if fit is None:
-            return self._reject(key, "no three-term free boundary at this design point")
+            return self._reject(key, "no three-term free boundary at this design point: " + "; ".join(why))
         self.stats["boundary_evaluations"] += fit["nfev"]
         self.stats["linearizations"] += fit.get("njev", 0)
         self._count(f"fit_{fit.get('reason', 'as_saved')}")  # how the fit ended; the saved boundary has no reason
@@ -340,7 +353,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
     def _reject(self, key, reason):
         self.stats["failed"] += 1
-        kind = re.sub(r"[-+]?\d[\d.]*(e[-+]?\d+)?", "#", reason)[:80]  # the reason without its numbers
+        kind = re.sub(r"[-+]?\d[\d.]*(e[-+]?\d+)?", "#", reason)[:200]  # the reason without its numbers
         self.stats["rejection_reasons"][kind] = self.stats["rejection_reasons"].get(kind, 0) + 1
         self._cache[key], self._rejections[key] = None, reason
         return None
@@ -361,9 +374,11 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         if "J" in sol:
             return sol["J"]
         model, xj = self.model, jnp.asarray(x)
-        field, n_fit = self.field(xj), model.x0.size  # boundary and bootstrap-current coordinates
+        n_fit = model.x0.size  # boundary and bootstrap-current coordinates
+        follow, held = model.labelling == "flat_arc", model._labels  # held: the accepted point's rows
 
         def linearized():
+            field = self.field(xj)  # with the label rows as they are now
             extra = self._plasma_directions(sol["params"], xj) if self._plasma.size else None
             try:
                 J, _, _, aux = model.linearize(sol["x"], sol["aux"], field, extra=extra)
@@ -376,25 +391,33 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             self.stats["linearizations"] += 1
             return J
 
-        J = linearized()
-        for _ in range(GRADIENT_POLISH_ROUNDS):
-            sol["radius"] = model._radius  # the radius this round starts with: the trials near x start with it too
-            try:  # the fit continued from the Jacobian at the fit, on POLISH_SLOW_COST
-                polished = model.solve_boundary(
-                    self._params_at(xj), field, x0=sol["x"], jacobian=J[:, :n_fit], ftol=self.boundary_ftol,
-                    max_nfev=self.boundary_max_nfev, slow_cost=POLISH_SLOW_COST)
-            except (VmecError, RuntimeError):  # no polish: the fit's own Jacobian stands
-                break
-            self.stats["boundary_evaluations"] += polished["nfev"]
-            self.stats["linearizations"] += polished["njev"]
-            if np.array_equal(polished["x"], sol["x"]):  # no step on its own Jacobian: J is the fit's, and stays
-                break
-            self.stats["polish_gain"] = float(1.0 - (polished["rows"] @ polished["rows"]) / (sol["rows"] @ sol["rows"]))
-            sol.update(x=polished["x"], aux=polished["aux"])
-            J = linearized()  # the gradient needs the Jacobian at the point it is taken at
-            self._count("polish_rounds")
-        else:
-            self._count("polish_capped")  # still moving after the last round: a trial here may move a little
+        try:
+            J = linearized()
+            for _ in range(GRADIENT_POLISH_ROUNDS):
+                if follow:  # the label rows set at this round's start, where they vanish (the same linearization)
+                    model.set_label_rows(sol["x"], J)
+                    J = linearized()
+                sol["radius"] = model._radius  # the radius this round starts with: the trials near x start with it
+                try:  # the fit continued from the Jacobian at the fit, on POLISH_SLOW_COST
+                    polished = model.solve_boundary(
+                        self._params_at(xj), self.field(xj), x0=sol["x"], jacobian=J[:, :n_fit],
+                        ftol=self.boundary_ftol, max_nfev=self.boundary_max_nfev, slow_cost=POLISH_SLOW_COST)
+                except (VmecError, RuntimeError):  # no polish: the fit's own Jacobian stands
+                    break
+                self.stats["boundary_evaluations"] += polished["nfev"]
+                self.stats["linearizations"] += polished["njev"]
+                if np.array_equal(polished["x"], sol["x"]):  # no step on its own Jacobian: J is the fit's, and stays
+                    break
+                self.stats["polish_gain"] = float(
+                    1.0 - (polished["rows"] @ polished["rows"]) / (sol["rows"] @ sol["rows"]))
+                sol.update(x=polished["x"], aux=polished["aux"])
+                J = linearized()  # the gradient needs the Jacobian at the point it is taken at
+                self._count("polish_rounds")
+            else:
+                self._count("polish_capped")  # still moving after the last round: a trial here may move a little
+        finally:
+            if follow and held is not None and model._labels is not held:  # the next trial fits under the
+                model._labels, model._last_linearize = held, None  # accepted point's rows
         sol["J"] = J
         return J
 

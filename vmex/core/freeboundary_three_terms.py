@@ -26,8 +26,8 @@ principle; numerically a row ``(G_plasma - G_coil) / G_coil`` closes it directly
 (``net_current_weight``).  With ``p = 0`` on the boundary a solution satisfies
 all three exactly; a nonzero edge pressure needs a sheet current and is
 rejected.  The interface conditions leave the boundary's poloidal labelling
-free: ``ThreeTermsConfig.labelling`` fixes it (``"anchored"``, ``"equal_arc"``,
-``"flat_arc"`` or ``"none"``).
+free: ``ThreeTermsConfig.labelling`` fixes it (``"flat_arc"``, the default,
+``"equal_arc"`` or ``"anchored"``).
 
 This is an opt-in alternative to NESTOR (a VMEX extension, like position
 control); nothing changes unless it is requested.  Entry points, from the most
@@ -251,31 +251,29 @@ def _arc_label(inp):
     return label
 
 
-
-#: The flat-arc gauge (``labelling="flat_arc"``): the boundary directions it holds are those of the fit's Jacobian, in
-#: column-scaled coordinates, with a singular value below :data:`GAUGE_TAU` times the largest and a normal share (RMS
-#: normal over RMS displacement of the surface) below :data:`GAUGE_NORMAL_SHARE`.  The default holds every tangential
-#: direction (its rows are soft and zero at the reference fit, so a direction the interface rows determine is theirs
-#: anyway; the weight decides, no cutoff).
-GAUGE_TAU = 1.0
-GAUGE_NORMAL_SHARE = 0.2
+#: The flat-arc label rows (``labelling="flat_arc"``) hold the tangential singular directions of the fit's Jacobian,
+#: taken in column-scaled coordinates: those whose normal share is below :data:`LABEL_NORMAL_SHARE`.  The normal share
+#: is the RMS normal displacement of the surface over its RMS displacement.  The label rows are soft and zero at the
+#: reference fit, so the interface rows still set any direction they determine.  The label weight decides.
+LABEL_NORMAL_SHARE = 0.2
 
 
 #: Largest RMS interface residual (relative to ``|B|``) of a three-term free boundary that counts as solved: a guard
-#: against wrong stationary points, not an accuracy standard (about upstream #614's DEL-BSQ gate of 2e-2 on B^2).
+#: against wrong stationary points, not an accuracy standard (about upstream's DEL-BSQ gate of 2e-2 on B^2).
 ACCEPTED_RESIDUAL = 1e-2
 
 #: Default labelling-row weight of each labelling: the smallest that keeps the fit well posed for the anchored
 #: labelling, and for equal arc the weight that biases the interface rows least while it still pins the labelling
-#: on the benchmark designs; for flat arc that of its arc-distribution rows (zero at the reference fit, so they need
-#: not be weak);
-#: ``"none"`` has no labelling rows, as any labelling at weight 0 (the same model).
-LABEL_WEIGHTS = {"anchored": 1e-2, "equal_arc": 1e-3, "flat_arc": 1e-1, "none": 0.0}
+#: on the benchmark designs; for flat arc the same weak weight: its rows must pin the labelling only, since the
+#: directions they hold are nearly flat, not free (at 1e-1 a single-stage fit that follows them ends 20 times
+#: further from the free boundary in B.n).  These are the accepted labellings.  A labelling at weight 0 has no
+#: labelling rows: the model names it ``"none"``.
+LABEL_WEIGHTS = {"flat_arc": 1e-3, "equal_arc": 1e-3, "anchored": 1e-2}
 
 
-class _GaugedField(NamedTuple):
-    """An external field with the flat-arc gauge rows' arrays: arguments of the compiled rows, so a new gauge of the
-    same shape does not recompile them."""
+class _LabelledField(NamedTuple):
+    """An external field with the flat-arc label rows' arrays: arguments of the compiled rows, so new label rows of the
+    same shape do not recompile them."""
 
     field: Any
     weights: Any
@@ -283,44 +281,66 @@ class _GaugedField(NamedTuple):
 
 
 def _external_field(field):
-    """The external field of ``field``, gauged or not."""
-    return field.field if isinstance(field, _GaugedField) else field
+    """The external field of ``field``, with label rows or not."""
+    return field.field if isinstance(field, _LabelledField) else field
 
 
 @dataclass(frozen=True)
 class ThreeTermsConfig:
     """Settings of a three-term free-boundary solve (``three_terms=`` of the free-boundary solvers).
 
-    ``labelling`` fixes the boundary's poloidal labelling, which the interface conditions leave free:
-    ``"anchored"`` penalizes the tangential offset of the boundary points from a reference boundary (the
-    initial one: each labelled point is held near its position there, the surface free to move), ``"equal_arc"``
-    asks for equal arc length on every toroidal cut of the current surface (and a zero phase of its ``m = 1``
-    part), ``"flat_arc"`` holds the arc-length distribution of a reference fit along the fit's flat, tangential
-    directions on the current surface (:meth:`ThreeTermsModel.set_flat_arc_gauge`: the no-label fit, made well
-    determined), and ``"none"`` adds no labelling rows (any labelling at
-    ``label_weight=0`` is the same model).  ``label_weight`` scales those rows against the interface rows
-    (default :data:`LABEL_WEIGHTS`).  ``start`` is the initial boundary: ``"deck"``, ``"nestor"`` (this ladder's
-    NESTOR free boundary) or ``"best"`` (both, keeping the lower cost: the interface least squares has several
-    minima).
+    ``labelling``
+        Fixes the boundary's poloidal labelling, which the interface conditions leave free.
 
-    The residual is ``sqrt(area weight)`` times ``weights = (normal, pressure, sheet current)`` times the rows of
-    :func:`boundary_residual` on an ``nphi x ntheta`` grid over one field period, with the virtual-casing
-    quadrature planned on the initial boundary to ``digits`` or fixed by ``quadrature = (quad_nt, quad_np)``
-    (use ``(4 nfp nphi, 2 ntheta)``); ``net_current_weight`` scales the net-poloidal-current row.  The boundary
-    Fourier coefficients up to ``max_mode`` (default: all) and ``RBC(0,0)`` are the unknowns.  A trust region
-    with exact implicit Jacobians runs to a relative cost change of ``jacobian_ftol``, then Levenberg-Marquardt
-    steps with its last Jacobian go on to ``ftol`` (``max_nfev`` evaluations at most)
-    and ``chunk`` bounds the Jacobian columns per batch.  ``success`` also requires every RMS interface residual
-    at or below ``max_residual``.  ``bootstrap`` (:class:`~vmex.core.bootstrap.KineticProfiles`, with
-    ``bootstrap_helicity`` and ``bootstrap_weight``) solves a Redl-self-consistent current profile together with
-    the boundary (opt-in).  The default, as in VMEC, holds the deck's pressure and current as inputs; in
-    single-stage optimization the current is then a design variable held self-consistent by a constraint row
-    (:class:`~vmex.optimize.RedlBootstrapMismatch`).  Prefer that: with the current in the fit, its rows dominate
+        - ``"flat_arc"`` (the default) holds the arc-length distribution of a reference fit along the fit's flat,
+          tangential directions on the current surface (:meth:`ThreeTermsModel.set_label_rows`): the labelling of the
+          fit without label rows, held along the directions that fit leaves nearly free.
+          :func:`solve_free_boundary_three_terms` sets the rows at its fit without them.  The single-stage problem
+          sets them at every accepted step.
+        - ``"equal_arc"`` asks for equal arc length on every toroidal cut of the current surface, and a zero phase of
+          its ``m = 1`` part.
+        - ``"anchored"`` penalizes the tangential offset of the boundary points from a reference boundary, the
+          initial one.  Each labelled point is held near its position there, and the surface is free to move.
+    ``label_weight``
+        Scales the labelling rows against the interface rows (default :data:`LABEL_WEIGHTS`).  At weight 0 a
+        labelling has no rows.
+    ``start``
+        The initial boundary: ``"deck"``, ``"nestor"`` (this ladder's NESTOR free boundary) or ``"best"``.  ``"best"``
+        tries both and keeps the lower cost, because the interface least squares has several minima.
+    ``weights``, ``nphi``, ``ntheta``
+        The residual is ``sqrt(area weight)`` times ``weights = (normal, pressure, sheet current)`` times the rows of
+        :func:`boundary_residual` on an ``nphi x ntheta`` grid over one field period.
+    ``digits``, ``quadrature``
+        The virtual-casing quadrature is planned on the initial boundary to ``digits``, or fixed by
+        ``quadrature = (quad_nt, quad_np)``.  Use ``(4 nfp nphi, 2 ntheta)``.
+    ``net_current_weight``
+        Scales the net-poloidal-current row.
+    ``max_mode``
+        The unknowns are the boundary Fourier coefficients up to ``max_mode`` (default: all) and ``RBC(0,0)``.
+    ``jacobian_ftol``, ``ftol``, ``max_nfev``
+        The fresh-Jacobian fit, a trust region with exact implicit Jacobians, runs to a relative cost change of
+        ``jacobian_ftol``.  The reused-Jacobian steps, Levenberg-Marquardt steps with its last Jacobian, then go on
+        to ``ftol``, in ``max_nfev`` evaluations at most.
+    ``chunk``
+        Bounds the Jacobian columns per batch.
+    ``max_residual``
+        ``success`` also requires every RMS interface residual at or below it.
+    ``bootstrap``, ``bootstrap_helicity``, ``bootstrap_weight``
+        ``bootstrap``, a :class:`~vmex.core.bootstrap.KineticProfiles`, solves a Redl-self-consistent current profile
+        together with the boundary.  It is opt-in.
+
+    The default, as in VMEC, holds the deck's pressure and current as inputs.  In single-stage optimization the
+    current is then a design variable held self-consistent by a constraint row
+    (:class:`~vmex.optimize.RedlBootstrapMismatch`).  Prefer that.  With the current in the fit, its rows dominate
     the fit's cost and its stopping test, and the interface residuals end where the path leaves them (QA at
     2.5 % beta).
+
+    :class:`~vmex.core.freeboundary_three_terms_problem.ThreeTermsFreeBoundaryProblem` ignores ``ftol``,
+    ``jacobian_ftol``, ``max_nfev``, ``max_residual`` and ``start``.  It takes its own ``boundary_ftol``,
+    ``boundary_max_nfev`` and ``boundary_max_residual``.
     """
 
-    labelling: str = "equal_arc"
+    labelling: str = "flat_arc"
     label_weight: float | None = None
     start: str = "best"
     max_mode: int | None = None
@@ -341,11 +361,9 @@ class ThreeTermsConfig:
 
     def __post_init__(self) -> None:
         if self.labelling not in LABEL_WEIGHTS:
-            raise ValueError(f"labelling must be one of {sorted(LABEL_WEIGHTS)}, got {self.labelling!r}")
+            raise ValueError(f"labelling must be one of {list(LABEL_WEIGHTS)}, got {self.labelling!r}")
         if self.start not in ("best", "deck", "nestor"):
             raise ValueError(f"start must be 'best', 'deck' or 'nestor', got {self.start!r}")
-        if self.labelling == "none" and self.label_weight:
-            raise ValueError("labelling='none' has no labelling rows to weight")
 
     @classmethod
     def from_input(cls, inp: Any) -> "ThreeTermsConfig | None":
@@ -389,10 +407,10 @@ class ThreeTermsResult:
     ``boundary_residual`` and ``initial_boundary_residual`` are the :class:`BoundaryResidual` of the solution and
     of the initial boundary, ``start`` the initial boundary kept (``"deck"`` or ``"nestor"``).  As DESC's least
     squares, the fit stops where it cannot improve any more: ``converged`` is True when the Levenberg-Marquardt
-    finish met its relative cost-change test, or its steps still gained under 5% each after a fresh Jacobian;
-    False when it ran out of evaluations or its trust radius collapsed.  A stationary point need not be the free
-    boundary, and the interface rows cannot reach zero at a finite resolution, so ``success`` also requires every
-    RMS interface residual at or below the configuration's ``max_residual``.  ``x`` are the boundary
+    finish met its relative cost-change test, or its steps still gained under ``1 - LM_SLOW_COST`` each after a
+    fresh Jacobian; False when it ran out of evaluations or its trust radius collapsed.  A stationary point need not
+    be the free boundary, and the interface rows cannot reach zero at a finite resolution, so ``success`` also
+    requires every RMS interface residual at or below the configuration's ``max_residual``.  ``x`` are the boundary
     coordinates (then any bootstrap-current values) and ``cost`` the fit's; ``input`` is the free boundary (and
     current) as a fixed-boundary deck, ``equilibrium`` its equilibrium; ``jacobian``, ``model`` and ``aux``
     continue the solve after a coil change (``previous=``).
@@ -424,7 +442,6 @@ def solve_free_boundary_three_terms(
     mgrid_path=None,
     initial_boundary: VmecInput | None = None,
     previous: ThreeTermsResult | None = None,
-    fresh_jacobian: bool = False,
     verbose: int = 0,
 ) -> ThreeTermsResult:
     """Free-boundary equilibrium of ``inp`` from the three interface conditions, from one initial boundary.
@@ -438,8 +455,11 @@ def solve_free_boundary_three_terms(
     field with ``b_cyl``).  ``config`` is a :class:`ThreeTermsConfig` (its ``start`` is
     :func:`~vmex.core.multigrid.solve_free_boundary_multigrid`'s).  ``previous``, an earlier result for the same
     deck (typically before a coil change), starts from its boundary, Jacobian and model: neither new coils nor a
-    repeat solve compile anything.  ``fresh_jacobian`` starts from ``previous``'s boundary and model but recomputes
-    the Jacobian, for a field far from the previous one (a continuation step).
+    repeat solve compile anything.
+
+    With the labelling ``"flat_arc"`` the boundary is first fitted without label rows.  The rows are then set at
+    that fit (:meth:`ThreeTermsModel.set_label_rows`), where they vanish, and the fit goes on from there under
+    them.  A ``previous`` result keeps its rows.
     """
     from .freeboundary import _resolve_mgrid
     from .mgrid import MgridField
@@ -454,7 +474,7 @@ def solve_free_boundary_three_terms(
         # interpolant has kinks that NESTOR (on the planes) never sees; on the CTH-like deck they cost 0.4 mm
         external_field = MgridField.from_input(inp, _resolve_mgrid(inp, mgrid_path), order=3)
     if previous is not None:
-        model, x0, jacobian = previous.model, previous.x, None if fresh_jacobian else previous.jacobian
+        model, x0, jacobian = previous.model, previous.x, previous.jacobian
     else:
         start = inp if initial_boundary is None else replace(
             inp, rbc=initial_boundary.rbc, zbs=initial_boundary.zbs,
@@ -464,9 +484,21 @@ def solve_free_boundary_three_terms(
     seed_state = model.seed[0] if previous is None else previous.aux[0]
     seed_params = model.params0 if previous is None else previous.aux[2]
     initial = model.boundary_residual(seed_state, seed_params, external_field)
-    out = model.solve_boundary(model.params0, external_field, x0=x0, jacobian=jacobian, ftol=config.ftol,
+    fit = dict(ftol=config.ftol, max_nfev=config.max_nfev, verbose=verbose)
+    out = model.solve_boundary(model.params0, model.labelled(external_field), x0=x0, jacobian=jacobian,
                                jacobian_ftol=config.ftol if config.jacobian_ftol is None else config.jacobian_ftol,
-                               max_nfev=config.max_nfev, refresh_on_stall=True, verbose=verbose)
+                               refresh_on_stall=True, **fit)
+    if model.labelling == "flat_arc" and model._labels is None:  # flat arc's rows, set at the fit without them
+        J = model.linearize(out["x"], out["aux"], external_field)[0]
+        fresh = J is not out["jacobian"]
+        if model.set_label_rows(out["x"], J):
+            field = model.labelled(external_field)
+            J = model.linearize(out["x"], out["aux"], field)[0]  # the same linearization, with the new rows
+            # The rows vanish at the fit, so its cost and gradient are unchanged: the steps start where it ended.
+            held = model.solve_boundary(model.params0, field, x0=out["x"], jacobian=J, **fit)
+            out = dict(held, nfev=out["nfev"] + held["nfev"], njev=out["njev"] + int(fresh),
+                       accepted=out["accepted"] + held["accepted"],
+                       converged=held["converged"] or held["reason"] == "stalled")  # as refresh_on_stall counts
     state, _, params = out["aux"]
     boundary = model._im.input_with_params(model.fixed, params)
     residual = model.boundary_residual(state, params, external_field)
@@ -489,69 +521,67 @@ def solve_free_boundary_three_terms(
 class ThreeTermsModel:
     """The free boundary of one deck for many external fields and plasma parameters.
 
-    The fixed-boundary equilibria and their derivatives come from
-    :mod:`vmex.core.implicit`, with the boundary, PHIEDGE and current profile
-    as traced :class:`~vmex.core.implicit.ImplicitParams`, and the external
-    field enters the compiled interface rows as an argument: neither new coils
-    nor new plasma parameters recompile anything, which is what an optimizer
-    that solves the free boundary at every step needs.
+    The fixed-boundary equilibria and their derivatives come from :mod:`vmex.core.implicit`, with the boundary,
+    PHIEDGE and current profile as traced :class:`~vmex.core.implicit.ImplicitParams`.  The external field enters the
+    compiled interface rows as an argument.  So neither new coils nor new plasma parameters recompile anything, which
+    is what an optimizer that solves the free boundary at every step needs.
 
-    Coordinates: ``x`` are the boundary coefficients up to ``max_mode`` and
-    ``RBC(0,0)`` (:func:`~vmex.core.optimize.pack_boundary`; ``x0`` the
-    deck's, ``x_scale`` their ESS scales), ``params`` an ``ImplicitParams``
-    (``params0`` the deck's) whose boundary ``with_boundary(params, x)``
-    replaces.  The rows are those of :func:`solve_free_boundary_three_terms`,
-    with the quadrature plan and the labelling reference fixed on the deck's
-    boundary (``seed``: its ``(state, mask)``).  ``labelling`` and
-    ``label_weight`` are those of :class:`ThreeTermsConfig` (default equal arc
-    at :data:`LABEL_WEIGHTS`).
+    Coordinates:
 
-    Methods: :meth:`solve_boundary` (the K = 0 boundary, cold or warm),
-    :meth:`evaluate` (rows at a boundary), :meth:`linearize` (their Jacobian
-    and the state responses), :meth:`pullback` (reverse-mode gradients of other
-    functions of the equilibrium), :meth:`boundary_residual` and
-    :meth:`solve`; ``rows(state, params, field)`` and ``rows_at(state,
-    runtime, field)`` are the traceable rows themselves.
+    - ``x``: the boundary coefficients up to ``max_mode`` and ``RBC(0,0)``
+      (:func:`~vmex.core.optimize.pack_boundary`).  ``x0`` are the deck's and ``x_scale`` their ESS scales.
+    - ``params``: an ``ImplicitParams`` (``params0`` the deck's).  ``with_boundary(params, x)`` replaces its boundary.
 
-    ``quadrature = (quad_nt, quad_np)`` fixes the singular
-    quadrature instead of planning it to ``digits`` (``quad_nt`` a multiple of
-    ``nfp * nphi``), whose error estimate alone can exhaust a GPU on a strongly
-    shaped boundary.  Use ``(4 nfp nphi, 2 ntheta)``: with ``quad_np = ntheta``
-    the tangential plasma field on a vacuum surface is off by ~3e-4 ``|B|``, the
-    fit absorbs it in the boundary, and its near-resonant B.n harmonics grow
-    several-fold (8 x 8 vacuum benchmark: field lines leave the LCFS by 7 mm
-    instead of 1 mm), at no extra memory.  ``chunk`` bounds the Jacobian
-    columns per batch.
+    The rows are those of :func:`solve_free_boundary_three_terms`, with the quadrature plan and the labelling
+    reference fixed on the deck's boundary.  ``seed`` is that boundary's ``(state, mask)``.  ``labelling`` and
+    ``label_weight`` are those of :class:`ThreeTermsConfig` (default flat arc at :data:`LABEL_WEIGHTS`).  Flat arc
+    has no rows until :meth:`set_label_rows` sets them.
 
-    ``bootstrap`` (:class:`~vmex.core.bootstrap.KineticProfiles`, with
-    ``bootstrap_helicity`` the quasisymmetry ``N`` of the Redl model) makes the
-    current profile Redl's bootstrap current in the same solve: ``x`` gains its
-    knot values (three inside the first surface, then one on every half-mesh
-    surface) after the boundary coordinates (``n_boundary`` of them), and the
-    rows gain one self-consistency row per knot, scaled by ``bootstrap_weight`` (large by default: the current is
-    no interface condition to trade against the others, so its block is solved
-    far below their floor; see
-    :class:`~vmex.core.bootstrap.HalfMeshCurrent`;
-    ``ns <= 97``, a prescribed-current deck).  The current then follows the
-    equilibrium instead of being an input, and :meth:`bootstrap_residual`
-    reports how far it is from Redl's.  ``fixed_boundary=True`` (with
-    ``bootstrap``) holds the boundary at that of ``params`` and solves only the
-    current: ``x`` is the current values alone, the rows are the bootstrap ones
-    and no external field or virtual casing enters -- the fixed-boundary
-    single stage's equilibrium, with the same Jacobians and pullbacks.
+    Methods:
+
+    - :meth:`solve_boundary`: the K = 0 boundary, cold or warm;
+    - :meth:`evaluate`: rows at a boundary;
+    - :meth:`linearize`: their Jacobian and the state responses;
+    - :meth:`pullback`: reverse-mode gradients of other functions of the equilibrium;
+    - :meth:`boundary_residual` and :meth:`solve`;
+    - ``rows(state, params, field)`` and ``rows_at(state, runtime, field)``: the traceable rows themselves.
+
+    ``quadrature = (quad_nt, quad_np)``
+        Fixes the singular quadrature instead of planning it to ``digits``.  ``quad_nt`` is a multiple of
+        ``nfp * nphi``.  The plan's error estimate alone can exhaust a GPU on a strongly shaped boundary.  Use
+        ``(4 nfp nphi, 2 ntheta)``, at no extra memory.  With ``quad_np = ntheta`` the tangential plasma field on a
+        vacuum surface is off by ~3e-4 ``|B|``, the fit absorbs it in the boundary, and its near-resonant B.n
+        harmonics grow several-fold.  On the 8 x 8 vacuum benchmark, field lines then leave the LCFS by 7 mm instead
+        of 1 mm.
+    ``chunk``
+        Bounds the Jacobian columns per batch.
+    ``bootstrap``, ``bootstrap_helicity``, ``bootstrap_weight``
+        ``bootstrap``, a :class:`~vmex.core.bootstrap.KineticProfiles`, makes the current profile Redl's bootstrap
+        current in the same solve.  ``bootstrap_helicity`` is the quasisymmetry ``N`` of the Redl model.  ``x`` gains
+        the current's knot values after the ``n_boundary`` boundary coordinates.  The knots are three inside the
+        first surface, then one on every half-mesh surface.  The rows gain one self-consistency row per knot, scaled
+        by ``bootstrap_weight``.  The weight is large by default: the current is no interface condition to trade
+        against the others, so its block is solved far below their floor.  See
+        :class:`~vmex.core.bootstrap.HalfMeshCurrent`, which needs ``ns <= 97`` and a prescribed-current deck.  The
+        current then follows the equilibrium instead of being an input, and :meth:`bootstrap_residual` reports how
+        far it is from Redl's.
+    ``fixed_boundary=True``
+        With ``bootstrap``, holds the boundary at that of ``params`` and solves only the current.  ``x`` is the
+        current values alone, the rows are the bootstrap ones, and no external field or virtual casing enters.  This
+        is the fixed-boundary single stage's equilibrium, with the same Jacobians and pullbacks.
     """
 
     def __init__(self, inp: VmecInput, *, max_mode=None, nphi=48, ntheta=48, digits=4,
                  weights=(1.0, 1.0, 1.0), net_current_weight=1.0, label_weight=None, chunk=8,
                  quadrature=None, bootstrap=None, bootstrap_helicity=0, bootstrap_weight=100.0,
-                 fixed_boundary=False, labelling="equal_arc"):
+                 fixed_boundary=False, labelling="flat_arc"):
         from . import implicit as im
         from .bootstrap import HalfMeshCurrent
         from .optimize import _ess_scale, boundary_arrays_from_x, pack_boundary
 
         self._im = im
-        if labelling not in LABEL_WEIGHTS:
-            raise ValueError(f"labelling must be one of {sorted(LABEL_WEIGHTS)}, got {labelling!r}")
+        if labelling not in LABEL_WEIGHTS and (labelling, label_weight) != ("none", 0.0):  # "none": at weight 0
+            raise ValueError(f"labelling must be one of {list(LABEL_WEIGHTS)}, got {labelling!r}")
         if label_weight is None:
             label_weight = LABEL_WEIGHTS[labelling]
         if not label_weight:  # no labelling rows: the same problem whichever labelling was named
@@ -563,7 +593,7 @@ class ThreeTermsModel:
                                                                        bootstrap_weight)
         self.fixed_boundary = bool(fixed_boundary)
         self.labelling, self.label_weight = labelling, float(label_weight)
-        self._gauge = None  # flat arc's rows, once set: (label_weight * M^T, reference arc distribution)
+        self._labels = None  # flat arc's rows, once set: (label_weight * M^T, reference arc distribution)
         self._arc_label = _arc_label(fixed)
         if self.fixed_boundary and self.bootstrap is None:
             raise ValueError("fixed_boundary=True solves only the bootstrap current: pass bootstrap=")
@@ -632,7 +662,7 @@ class ThreeTermsModel:
         return np.r_[x, HalfMeshCurrent(inp, b.profiles, b.helicity_n, b.weight).x0]
 
     def _interface_setup(self, state, nphi, ntheta, digits, quadrature, weights, label_weight, net_current_weight,
-                         labelling="equal_arc"):
+                         labelling="flat_arc"):
         """The interface rows, with the quadrature plan and labelling reference of the seed ``state``."""
         from .freeboundary import _vacuum_scalars
         from .optimize import solve_equilibrium
@@ -672,14 +702,14 @@ class ThreeTermsModel:
             fixed, state, field, runtime=im.runtime_from_params(params, cfg), nphi=nphi, ntheta=ntheta, digits=digits,
             precision=precision, p_edge=0.0)[:2])
 
-    def _gauge_rows(self, params, weights, reference):
-        """The gauge's rows at ``params`` (they depend on the boundary alone)."""
+    def _label_rows(self, params, weights, reference):
+        """The label rows at ``params`` (they depend on the boundary alone)."""
         return weights @ (self._arc_label(params.rbc, params.zbs) - reference)
 
-    def gauged(self, field, gauge=None):
-        """``field`` with the ``gauge`` (default: the model's current one) as the rows expect it."""
-        gauge = self._gauge if gauge is None else gauge
-        return field if gauge is None else _GaugedField(field, *gauge)
+    def labelled(self, field, labels=None):
+        """``field`` with the label rows' arrays ``labels`` (default: the model's current ones)."""
+        labels = self._labels if labels is None else labels
+        return field if labels is None else _LabelledField(field, *labels)
 
     def _implicit_setup(self):
         """The rows (interface, then bootstrap) and their implicit tangents, pushes and pullbacks."""
@@ -687,11 +717,11 @@ class ThreeTermsModel:
 
         def rows(state, params, field):
             runtime = im.runtime_from_params(params, cfg)
-            gauge = field if isinstance(field, _GaugedField) else None
+            labels = field if isinstance(field, _LabelledField) else None
             parts = [] if self.fixed_boundary else [self.rows_at(state, runtime, _external_field(field))]
-            self._n_interface = sum(part.shape[0] for part in parts)  # static: where the gauge rows start
-            if gauge is not None:
-                parts.append(self._gauge_rows(params, gauge.weights, gauge.reference))
+            self._n_interface = sum(part.shape[0] for part in parts)  # static: where the label rows start
+            if labels is not None:
+                parts.append(self._label_rows(params, labels.weights, labels.reference))
             if self.bootstrap is not None:
                 parts.append(self.bootstrap.rows(state, runtime, params))
             return jnp.concatenate(parts)
@@ -816,55 +846,57 @@ class ThreeTermsModel:
         eye = jnp.eye(np.size(x))
         return jax.vmap(lambda e: jax.jvp(lambda xx: self.with_boundary(params, xx), (jnp.asarray(x),), (e,))[1])(eye)
 
-    def set_flat_arc_gauge(self, x, jacobian):
+    def set_label_rows(self, x, jacobian):
         """Hold the fit's flat, tangential directions at boundary ``x``; returns their number.
 
         The interface rows leave the boundary's labelling free: a few directions of the boundary coordinates are
         nearly flat for them, and a fit stops anywhere along those.  With ``jacobian`` the fit's rows' Jacobian at
         ``x`` (:meth:`linearize`), the held directions are the right singular vectors of its boundary columns
-        (scaled to unit norm) with a singular value below :data:`GAUGE_TAU` times the largest and a surface displacement
-        of normal share below :data:`GAUGE_NORMAL_SHARE` (a relabelling, not a shape change).  The rows are
+        (scaled to unit norm), the largest left out, with a surface displacement of normal share below
+        :data:`LABEL_NORMAL_SHARE` (a relabelling, not a shape change).  The rows are
         ``label_weight * M^T (L - L_x)``, ``L`` the arc-length distribution of the current boundary
         (:func:`_arc_label`), ``L_x`` that of the fit at ``x`` and ``M`` an orthonormal basis of its change along the
-        held directions: the labelling's arc distribution held at ``x``'s, as far as those directions reach -- no
-        point positions, so the surface moves freely and its labelling cannot degenerate.  Zero at ``x`` (an
+        held directions: the labelling's arc distribution held at ``x``'s, as far as those directions reach.  No
+        point positions are held, so the surface moves freely and its labelling cannot degenerate.  Zero at ``x`` (an
         absolute equal-arc target costs the interface accuracy: the flat directions are weak, not free).
         The rows keep their number when fewer directions are held (zero rows), so a refresh recompiles nothing.
         """
         if self.labelling != "flat_arc":
-            raise ValueError("set_flat_arc_gauge needs labelling='flat_arc'")
+            raise ValueError("set_label_rows needs labelling='flat_arc'")
         nb, last = self.n_boundary, self._last_linearize
         self._radius = None  # the next fit is of a new problem
-        old = 0 if self._gauge is None else self._gauge[0].shape[0]
+        old = 0 if self._labels is None else self._labels[0].shape[0]
         xb = np.asarray(x, dtype=float)[:nb]
         J = np.asarray(jacobian)[:, :nb]
-        if self._gauge is not None:  # a refresh: the interface (and bootstrap) rows' Jacobian, without the old gauge's
-            J = np.delete(J, np.s_[self._n_interface:self._n_interface + self._gauge[0].shape[0]], axis=0)
+        if self._labels is not None:  # a refresh: the interface (and bootstrap) rows' Jacobian alone
+            J = np.delete(J, np.s_[self._n_interface:self._n_interface + self._labels[0].shape[0]], axis=0)
         norms = np.linalg.norm(J, axis=0)
         norms[norms == 0.0] = 1.0
         _, sv, Vt = np.linalg.svd(J / norms, full_matrices=False)
         A, B = _displacement_metrics(self.fixed, xb, self.max_mode)
-        flat = [u for s, u in zip(sv, Vt) if s < GAUGE_TAU * sv[0]]
-        tangential = lambda u: u @ A @ u < GAUGE_NORMAL_SHARE ** 2 * (u @ B @ u)  # noqa: E731
-        held = [u for u in flat if tangential(u / norms)]
+        candidates = Vt[1:]  # every direction but the stiffest; the normal share picks the tangential ones
+        tangential = lambda u: u @ A @ u < LABEL_NORMAL_SHARE ** 2 * (u @ B @ u)  # noqa: E731
+        held = [u for u in candidates if tangential(u / norms)]
         if held:
             L = _jacfwd(self._boundary_arc, jnp.asarray(xb, dtype=float))
             M = np.linalg.qr(np.asarray(L) @ (np.array(held).reshape(-1, nb) / norms).T)[0]
             weights = self.label_weight * M.T
             weights = np.vstack([weights, np.zeros((max(old - weights.shape[0], 0), weights.shape[1]))])
-            self._gauge = (jnp.asarray(weights), self._boundary_arc(jnp.asarray(xb)))
-        elif self._gauge is not None:
-            self._gauge = (jnp.zeros_like(self._gauge[0]), self._boundary_arc(jnp.asarray(xb)))
-        if last is not None and last[2][0] is jacobian:  # keep that linearization, its gauge rows swapped: they
+            self._labels = (jnp.asarray(weights), self._boundary_arc(jnp.asarray(xb)))
+        elif self._labels is not None:
+            self._labels = (jnp.zeros_like(self._labels[0]), self._boundary_arc(jnp.asarray(xb)))
+        if last is not None and last[2][0] is jacobian:  # keep that linearization, its label rows swapped: they
             # depend on the boundary alone, so their columns are the new rows' derivatives along its tangents
             key, extra_key, (columns, dz, batch, aux), linearization = last
-            new = np.zeros((0, columns.shape[1])) if self._gauge is None else np.asarray(jax.lax.map(
-                lambda t: jax.jvp(lambda p: self._gauge_rows(p, *self._gauge), (aux[2],), (t,))[1], batch, batch_size=32
-            )).T  # in batches, as _jacfwd
+            new = np.zeros((0, columns.shape[1])) if self._labels is None else np.asarray(jax.lax.map(
+                lambda t: jax.jvp(lambda p: self._label_rows(p, *self._labels), (aux[2],), (t,))[1], batch,
+                batch_size=32)).T  # in batches, as _jacfwd
             i = self._n_interface
             columns = np.vstack([columns[:i], new, columns[i + old:]])
             self._last_linearize = (key, extra_key, (columns, dz, batch, aux), linearization)
             self._linearization = linearization
+        else:  # a cached linearization of other label rows must not answer for the new ones
+            self._last_linearize = None
         return len(held)
 
     def _boundary_arc(self, z):
@@ -873,13 +905,13 @@ class ThreeTermsModel:
 
         return self._arc_label(*boundary_arrays_from_x(self.fixed, z, self.max_mode, vary_major_radius=True)[:2])
 
-    def gauge_curvature(self, x, params):
-        """``sum_i g_i(x) Hess g_i(x)`` of the flat-arc gauge rows ``g`` (nonlinear in the boundary) at the fit
+    def label_rows_curvature(self, x, params):
+        """``sum_i g_i(x) Hess g_i(x)`` of the flat-arc label rows ``g`` (nonlinear in the boundary) at the fit
         ``x`` with parameters ``params``, over all fit coordinates: the second-order term of the fit's stationarity
-        (Gauss-Newton's ``J^T J`` misses it while ``g`` is not zero).  ``None`` without a gauge."""
-        if self._gauge is None:
+        (Gauss-Newton's ``J^T J`` misses it while ``g`` is not zero).  ``None`` without label rows."""
+        if self._labels is None:
             return None
-        (M, reference), nb = self._gauge, self.n_boundary
+        (M, reference), nb = self._labels, self.n_boundary
         xb = jnp.asarray(x, dtype=float)[:nb]
         g = M @ (self._arc_label(params.rbc, params.zbs) - reference)
         S = np.zeros((np.size(x), np.size(x)))
@@ -918,7 +950,7 @@ class ThreeTermsModel:
             groups.append(extra)
         join = lambda *a: jnp.concatenate(a)  # noqa: E731
         # One tangent solve (one block factorization) for every group; the pushes stay per group.
-        self._last_linearize = self._linearization = None  # released first: two sets of responses need not fit
+        self._last_linearize = self._linearization = None  # dropped first: two sets of responses need not fit
         bands = self._im._block_bands(self.cfg, params_x, state, mask)
         dz_all = self._tangents(params_x, state, mask, jax.tree.map(join, *groups), bands)
         ends = np.cumsum([jax.tree.leaves(batch)[0].shape[0] for batch in groups])
@@ -942,18 +974,29 @@ class ThreeTermsModel:
         return columns, dz, batch, aux
 
     def solve_boundary(self, params, field, *, x0=None, jacobian=None, ftol=1e-4, jacobian_ftol=1e-2, max_nfev=60,
-                       target_cost=None, refresh_on_stall=False, verbose=0):
+                       target_cost=None, refresh_on_stall=False, slow_cost=None, verbose=0):
         """K = 0 boundary for ``params`` and ``field``.
 
-        With ``jacobian`` (from a nearby solve) Levenberg-Marquardt steps reuse it from ``x0``; otherwise, or if no
-        step reduces the cost, or they end above ``target_cost``, a trust region with fresh Jacobians runs to
-        ``jacobian_ftol`` and the reuse steps finish to ``ftol`` (see :func:`solve_free_boundary_three_terms`);
-        with ``refresh_on_stall`` a finish that stalled on a stale Jacobian retries once with a fresh one there.
-        Returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask, params), ``nfev``,
-        ``njev``, ``accepted`` and ``converged``.
+        The solve has two phases.  The fresh-Jacobian fit is a trust region that takes a new Jacobian at every step
+        and runs to ``jacobian_ftol``.  The reused-Jacobian steps are Levenberg-Marquardt steps on one Jacobian
+        (:func:`_levenberg_marquardt`) and run to ``ftol``.
+
+        With ``jacobian`` (from a nearby solve) the reused-Jacobian steps start from ``x0``, and the result is theirs.
+        If they neither reduce the cost, converge nor stall, or end above ``target_cost``, they run again on one
+        fresh Jacobian taken where they stopped.  If that still ends above ``target_cost``, both phases run from there.
+
+        Without ``jacobian`` both phases run: the fresh-Jacobian fit, then the reused-Jacobian steps on its last
+        Jacobian (see :func:`solve_free_boundary_three_terms`).  With ``refresh_on_stall``, reused-Jacobian steps that
+        stalled on a stale Jacobian retry once on a fresh one there.  ``slow_cost`` is the reused-Jacobian steps'
+        threshold (:func:`_levenberg_marquardt`, default ``LM_SLOW_COST``): a step is taken only if it leaves the cost
+        below this fraction.
+
+        Returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask, params), ``nfev``, ``njev``,
+        ``accepted``, ``converged``, ``reason`` and ``radius`` (of the reused-Jacobian steps).
         """
         import scipy.optimize
 
+        slow_cost = LM_SLOW_COST if slow_cost is None else slow_cost
         x = np.asarray(self.x0 if x0 is None else x0, dtype=float)
         nfev = njev = 0
         if jacobian is not None:
@@ -961,21 +1004,22 @@ class ThreeTermsModel:
             if first is None:
                 raise RuntimeError("the warm-start boundary has no certified equilibrium")
             out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), x, *first, jacobian,
-                                       ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
+                                       ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius,
+                                       slow_cost=slow_cost)
             self._radius = out["radius"]
             close = target_cost is None or 0.5 * out["rows"] @ out["rows"] <= target_cost
-            if (out["accepted"] or out["converged"]) and close:
-                return dict(out, jacobian=jacobian, njev=0)
+            if (out["accepted"] or out["converged"] or out["reason"] == "stalled") and close:
+                return dict(out, jacobian=jacobian, njev=0)  # stalled at a close fit: nothing left on this Jacobian
             # One fresh Jacobian where the steps stalled, and the same steps again, before a full trust region.
             J1, _, _, aux1 = self.linearize(out["x"], out["aux"], field)
             again = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), out["x"], out["rows"], aux1, J1,
                                          ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius,
-                                         fresh=True)
+                                         fresh=True, slow_cost=slow_cost)
             self._radius = again["radius"]
-            again["nfev"] += out["nfev"]
+            again["nfev"] += out["nfev"] - 1  # its first evaluation is the last of ``out``
             if target_cost is None or 0.5 * again["rows"] @ again["rows"] <= target_cost:
                 return dict(again, jacobian=J1, njev=1)
-            x, nfev = again["x"], again["nfev"]
+            x, nfev, njev = again["x"], again["nfev"], 1
         memo = {}
 
         def fun(z):
@@ -1002,40 +1046,70 @@ class ThreeTermsModel:
         nfev += int(fit.nfev)
         if memo.get("key") != fit.x.tobytes():
             fun(fit.x)
+            nfev += 1
         J = jac(fit.x) if memo.get("jacobian") is None or memo.get("jkey") != fit.x.tobytes() else memo["jacobian"]
         out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), fit.x, memo["rows"], memo["aux"], J,
-                                   ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
+                                   ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius,
+                                   slow_cost=slow_cost)
         self._radius = out["radius"]
         if refresh_on_stall and not out["converged"]:  # stalled on a stale Jacobian: one fresh one there
             J, _, _, aux = self.linearize(out["x"], out["aux"], field)
             again = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), out["x"], out["rows"], aux, J,
                                          ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius,
-                                         fresh=True)
+                                         fresh=True, slow_cost=slow_cost)
             self._radius, njev = again["radius"], njev + 1
             # still stalled on a fresh Jacobian: the steps gain nothing the rows can resolve, the point is
             # stationary (DESC's least squares counts relative gains below its ftol, 1e-2, as converged)
-            out = dict(again, nfev=out["nfev"] + again["nfev"],
+            out = dict(again, nfev=out["nfev"] + again["nfev"] - 1,
                        converged=again["converged"] or again["reason"] == "stalled")
-        return dict(out, jacobian=J, nfev=nfev + out["nfev"], njev=njev)
+        return dict(out, jacobian=J, nfev=nfev + out["nfev"] - 1, njev=njev)  # the steps start at an evaluated point
 
 
+#: Constants of :func:`_levenberg_marquardt`.
+LM_RADIUS_FLOOR = 0.05   # a carried radius starts at no less than this fraction of the first Gauss-Newton step
+LM_RADIUS_STOP = 1e-4    # the steps stop when the radius is below this fraction of the Gauss-Newton step
+LM_POOR_GAIN = 0.25      # a step that gained less than this fraction of its predicted reduction shrinks the radius
+LM_SHRINK = 0.25         # the shrunk radius, as a fraction of the poor step's length
+LM_GOOD_GAIN = 0.75      # a step that gained more than this fraction of its predicted reduction may grow the radius
+LM_AT_RADIUS = 0.99      # a step longer than this fraction of the radius counts as a step at the radius
+LM_GROW = 2.0            # the radius' growth factor after a good step at the radius
+LM_SLOW_COST = 0.98      # a step that leaves the cost above this fraction of it is slow (it gained under 2%)
+#                          (5 % left QH's interface residuals 15 % higher, 1 % cost 70-85 % more solves)
+LM_SLOW_STEPS = 3        # this many slow steps in a row stop the fit as stalled: the Jacobian is stale there
+LM_BISECTIONS = 60       # bisections of log(damping) for the step of the radius' length: 2^-60 of the bracket
 
-def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, radius=None, fresh=False):
-    """Trust-region Gauss-Newton steps with a fixed Jacobian ``J`` from ``x`` (``evaluate(x) -> (r, aux)`` or ``None``).
 
-    Each step costs one evaluation.  In Marquardt-scaled coordinates the step is the Levenberg-Marquardt step
-    whose length is the trust radius (the Gauss-Newton step if shorter), from one SVD of ``J``.  The radius
-    shrinks to a quarter of a step that gained less than a quarter of its predicted reduction, or that failed
-    to solve, and doubles after a step at the radius that gained three quarters of it.  ``radius`` carries the
-    last solve's radius over (at least 1/20 of the first Gauss-Newton step; default: that step's length).
-    Stops at a relative cost change of ``ftol`` that the linear model predicted, after three steps in a row
-    that each gained under 5% (the Jacobian is stale there), or when the radius falls below 1e-4 of the
-    Gauss-Newton step; ``reason`` is ``"ftol"``, ``"stalled"``, ``"radius"`` or ``"max_nfev"``.
-    ``fresh`` marks ``J`` as taken at ``x`` where the last steps stalled: until a step is accepted, one that
-    fails is the radius' fault, not the Jacobian's.  The carried radius is then kept as it is, failed steps only
-    shrink it down to a predicted relative gain of ``ftol`` (``"radius"``; the Gauss-Newton step of a nearly
-    singular ``J`` is long in directions the rows barely see, its length is no yardstick), and a short step that
-    gains what was predicted is not a slow one.  The radius returned is the last accepted step's.
+def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, radius=None, fresh=False,
+                         slow_cost=LM_SLOW_COST):
+    """Reused-Jacobian steps: trust-region Gauss-Newton steps on one fixed Jacobian ``J`` from ``x``.
+
+    ``evaluate(x)`` returns ``(r, aux)``, or ``None`` where the solve fails.  Each step costs one evaluation.  These
+    steps follow the fresh-Jacobian fit of :meth:`ThreeTermsModel.solve_boundary`, or replace it when a nearby
+    Jacobian is given.  The ``LM_*`` constants hold the numbers below.
+
+    The step.  In Marquardt-scaled coordinates it is the Levenberg-Marquardt step whose length is the trust radius,
+    or the Gauss-Newton step if that is shorter.  Both come from one SVD of ``J``.
+
+    The radius.  It shrinks to ``LM_SHRINK`` of the length of a step that gained less than ``LM_POOR_GAIN`` of its
+    predicted reduction, or that failed to solve.  It grows by ``LM_GROW`` after a step at the radius that gained
+    more than ``LM_GOOD_GAIN`` of its predicted reduction.  ``radius`` carries a radius over, raised to at least
+    ``LM_RADIUS_FLOOR`` of the first Gauss-Newton step.  The default is that step's length.
+
+    The stop.  ``reason`` is one of:
+
+    - ``"ftol"``: a relative cost change of ``ftol`` that the linear model predicted;
+    - ``"stalled"``: ``LM_SLOW_STEPS`` steps in a row each gained under ``1 - LM_SLOW_COST`` of the cost (the
+      Jacobian is stale there), or a slow step left the radius as it was (the next step would be the same one).
+      Slow steps are not taken, so the fit ends where its last real gain left it and a fit started there with the
+      same Jacobian and radius returns the same point;
+    - ``"radius"``: the radius fell below ``LM_RADIUS_STOP`` of the Gauss-Newton step;
+    - ``"max_nfev"``: the evaluations ran out.
+
+    ``fresh`` marks ``J`` as taken at ``x`` where the last steps stalled.  Until a step is accepted, a step that
+    fails is then the radius' fault, not the Jacobian's.  The carried radius is kept as it is.  Failed steps only
+    shrink it, down to a predicted relative gain of ``ftol`` (``"radius"``).  The Gauss-Newton step of a nearly
+    singular ``J`` is long in directions the rows barely see, so its length is no yardstick.  A short step that gains
+    what was predicted is not a slow one.  The radius returned is the last accepted step's.
     """
     J = np.asarray(J)
     if not np.all(np.isfinite(J)):
@@ -1060,14 +1134,14 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
             break
         full = np.linalg.norm(step(g, 0.0))
         if nfev == 1:  # a carried radius, but not far below this Jacobian's own step
-            radius = full if radius is None else radius if fresh else max(radius, 0.05 * full)
-        if not fresh and radius < 1e-4 * full:
+            radius = full if radius is None else radius if fresh else max(radius, LM_RADIUS_FLOOR * full)
+        if not fresh and radius < LM_RADIUS_STOP * full:
             reason = "radius"
             break
         lam = 0.0
         if full > radius:  # the damping whose step has the radius' length (bisection in log lam)
             lo, hi = np.log(sv[-1] ** 2 * 1e-12 + 1e-300), np.log(sv[0] ** 2 * (full / radius) + 1e-300)
-            for _ in range(60):
+            for _ in range(LM_BISECTIONS):
                 mid = 0.5 * (lo + hi)
                 lo, hi = (mid, hi) if np.linalg.norm(step(g, np.exp(mid))) > radius else (lo, mid)
             lam = np.exp(hi)
@@ -1086,18 +1160,25 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
             print(f"Levenberg-Marquardt step {nfev - 1}: |step| {length:.2e} (radius {radius:.2e}), cost "
                   f"{cost:.6e} -> {cost_new:.6e}, gain ratio {rho:.2f} ({time.perf_counter() - started:.1f} s)",
                   flush=True)
-        if rho < 0.25:
-            radius = 0.25 * length
-        elif rho > 0.75 and length > 0.99 * radius:
-            radius = 2.0 * radius
+        radius_before = radius
+        if rho < LM_POOR_GAIN:
+            radius = LM_SHRINK * length
+        elif rho > LM_GOOD_GAIN and length > LM_AT_RADIUS * radius:
+            radius = LM_GROW * radius
         at_x = fresh and not accepted  # J is still the Jacobian at x
-        slow = slow + 1 if cost_new > 0.95 * cost and not (at_x and cost_new >= cost or fresh and rho > 0.75) else 0
-        if cost_new < cost:
+        small_gain = cost_new > slow_cost * cost
+        # not the Jacobian's fault: a failed step at x itself, or a step on a fresh J that gained what was predicted
+        excused = (at_x and cost_new >= cost) or (fresh and rho > LM_GOOD_GAIN)
+        slow = slow + 1 if small_gain and not excused else 0
+        if slow and radius == radius_before:  # not taken, and the next step would be this one again
+            reason = "stalled"
+            break
+        if cost_new < cost and not slow:  # a slow step is not taken: a fit started where this one ends, ends there
             x, (r, aux), accepted, last = x_new, got, accepted + 1, length
-            if cost - cost_new <= ftol * cost and rho > 0.25:  # a small gain the linear model foresaw
+            if cost - cost_new <= ftol * cost and rho > LM_POOR_GAIN:  # a small gain the linear model foresaw
                 converged, reason = True, "ftol"
                 break
-        if slow == 3:  # three steps in a row gained under 5%: the Jacobian no longer describes the rows here
+        if slow == LM_SLOW_STEPS:  # slow steps in a row: the Jacobian no longer describes the rows here
             reason = "stalled"
             break
     return dict(x=x, rows=r, aux=aux, nfev=nfev, accepted=accepted, converged=converged,

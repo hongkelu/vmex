@@ -1110,8 +1110,8 @@ def test_shared_minimize_counts_accepted_steps_of_a_stateful_problem():
 
 
 def test_shared_minimize_restarts_slsqp_after_a_rejected_trial():
-    """A rejected Jacobian request ends SciPy's run; ``restart_on_rejection`` continues from the accepted point
-    with the remaining step budget, as long as the rejected run made progress."""
+    """A rejected Jacobian request ends SciPy's run, and the optimization continues from the accepted point with the
+    remaining step budget, as long as the rejected run made progress."""
     from vmex import optimize as opt
     from vmex.core.errors import TrialRejected
 
@@ -1128,10 +1128,8 @@ def test_shared_minimize_restarts_slsqp_after_a_rejected_trial():
         q.value_and_grad, q.fun = value_and_grad, lambda x: float(np.sum(x**4))
         return q
 
-    stopped = opt.minimize(problem(), method="SLSQP", options=dict(maxiter=8))
-    assert stopped.stop_reason == "equilibrium_trial_rejected" and 0 < stopped.accepted_steps < 8
     q = problem()
-    result = opt.minimize(q, method="SLSQP", options=dict(maxiter=8, restart_on_rejection=True))
+    result = opt.minimize(q, method="SLSQP", options=dict(maxiter=8))
     assert result.stop_reason == "accepted_step_budget_reached" and result.accepted_steps == 8
     assert len(q.promoted) == 8
     np.testing.assert_array_equal(result.x, q.promoted[-1])

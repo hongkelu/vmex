@@ -2222,11 +2222,11 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         named ``intermediate_result``; ``StopIteration`` stops the run.
     options:
         SciPy SLSQP options; ``maxiter`` (default 100) is the budget of
-        accepted steps for a stateful problem.  ``restart_on_rejection``
-        (default ``False``) restarts SLSQP from the accepted point, with the
-        remaining budget, after a rejected equilibrium trial that followed at
-        least one accepted step: a rejection ends SciPy's run and its
-        quasi-Newton Hessian, not the optimization.
+        accepted steps for a stateful problem.  For a stateful problem a
+        rejected equilibrium trial at a Jacobian request ends SciPy's run and
+        its quasi-Newton Hessian, not the optimization: SLSQP restarts from
+        the accepted point with the remaining budget, as long as the run made
+        at least one accepted step.
 
     Returns
     -------
@@ -2234,38 +2234,44 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         With ``x``, ``fun`` and ``jac`` at the last accepted point for a
         stateful problem (or on success), plus ``accepted_steps`` and
         ``stop_reason``: ``None`` when SciPy stopped on its own,
-        ``"accepted_step_budget_reached"``, ``"callback_stopped"`` or
-        ``"equilibrium_trial_rejected"``. The last three set
-        ``success=False`` and ``status=99``.
+        ``"accepted_step_budget_reached"``, ``"callback_stopped"``,
+        ``"equilibrium_trial_rejected"`` (no accepted step since the last
+        start) or ``"accepted_point_rejected"`` (a restart's accepted start
+        has no gradient). These set ``success=False`` and ``status=99``.
     """
+    if method != "SLSQP":
+        raise ValueError("minimize(FunctionProblem) supports only method='SLSQP'")
+    options = dict(options or {})
+    if getattr(problem, "accept_x", None) is None:
+        return _slsqp_run(problem, x0=x0, bounds=bounds, constraints=constraints, callback=callback,
+                          options=options, tol=tol)
+    budget, steps, counts = int(options.get("maxiter", 100)), 0, dict(nfev=0, njev=0)
+    result = None
+    while True:
+        try:
+            result = _slsqp_run(problem, x0=x0, bounds=bounds, constraints=constraints, callback=callback,
+                                options=dict(options, maxiter=budget - steps), tol=tol)
+        except TrialRejected as error:  # a restart whose accepted start has no gradient ends the run there
+            if result is None:
+                raise
+            result.stop_reason, result.message = "accepted_point_rejected", str(error)
+            break
+        steps += result.accepted_steps
+        for key in counts:
+            counts[key] += int(getattr(result, key, 0) or 0)
+        if result.stop_reason != "equilibrium_trial_rejected" or not result.accepted_steps or steps >= budget:
+            break
+        x0 = result.x
+    result.accepted_steps, result.nfev, result.njev = steps, counts["nfev"], counts["njev"]
+    return result
+
+
+def _slsqp_run(problem, *, x0, bounds, constraints, callback, options, tol):
+    """One SciPy SLSQP run of :func:`_minimize_problem` (which restarts it after a rejected trial)."""
     from scipy.optimize import Bounds, LinearConstraint, NonlinearConstraint, OptimizeResult
     from scipy.optimize import minimize as scipy_minimize
     from scipy.sparse import issparse
 
-    if method != "SLSQP":
-        raise ValueError("minimize(FunctionProblem) supports only method='SLSQP'")
-    options = dict(options or {})
-    if options.pop("restart_on_rejection", False):
-        budget, steps, counts = int(options.get("maxiter", 100)), 0, dict(nfev=0, njev=0)
-        result = None
-        while True:
-            try:
-                result = _minimize_problem(problem, x0=x0, method=method, bounds=bounds, constraints=constraints,
-                                           callback=callback, options=dict(options, maxiter=budget - steps), tol=tol)
-            except TrialRejected as error:  # a restart whose accepted start has no gradient ends the run there
-                if result is None:
-                    raise
-                result.stop_reason, result.message = "accepted_point_rejected", str(error)
-                break
-            steps += result.accepted_steps
-            for key in counts:
-                counts[key] += int(getattr(result, key, 0) or 0)
-            if (result.stop_reason != "equilibrium_trial_rejected" or not result.accepted_steps
-                    or steps >= budget):
-                break
-            x0 = result.x
-        result.accepted_steps, result.nfev, result.njev = steps, counts["nfev"], counts["njev"]
-        return result
     start = np.asarray(problem.x0 if x0 is None else x0, dtype=float).copy()
     scales = np.asarray(problem.scales, dtype=float)
     if (start.shape != scales.shape or start.ndim != 1 or not np.all(np.isfinite(start))
@@ -2327,7 +2333,7 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
     accepted = start.copy()
     value, gradient = problem.value_and_grad(accepted)
     accepted_value, accepted_gradient = value, np.asarray(gradient).copy()
-    accepted_steps, shift = 0, 0.0  # shift: what promotions (``accept_x`` returning true) moved the objective by
+    accepted_steps = 0
     nfev, njev = 1, 1
     if promote is not None and budget == 0:
         return OptimizeResult(x=start, fun=value, jac=gradient, success=False,
@@ -2338,19 +2344,16 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         pass
 
     def accept(u):
-        nonlocal accepted, accepted_value, accepted_gradient, accepted_steps, shift
+        nonlocal accepted, accepted_value, accepted_gradient, accepted_steps
         x = start + np.asarray(u)*scales
         if np.array_equal(x, accepted):
             return
-        if promote is not None:  # before the gradient: promotion may change what the problem linearizes
-            accepted_value = before = problem.fun(x)
-            moved = promote(x)
+        if promote is not None:  # before the gradient: promotion sets what the problem linearizes
+            promote(x)
             # the problem's point from here on, even if its gradient is rejected
-            accepted, accepted_gradient = x.copy(), np.full(x.size, np.nan)
+            accepted, accepted_gradient, accepted_value = x.copy(), np.full(x.size, np.nan), problem.fun(x)
             accepted_steps += 1
             accepted_value, current_gradient = problem.value_and_grad(x)
-            if moved:  # the promotion re-fitted the point: SLSQP's objective stays continuous across it
-                shift += accepted_value - before
         else:
             accepted_value, current_gradient = problem.value_and_grad(x)
             accepted, accepted_steps = x.copy(), accepted_steps + 1
@@ -2371,8 +2374,7 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         nonlocal nfev
         nfev += 1
         try:
-            value = problem.fun(start+scales*u)
-            return value - shift
+            return problem.fun(start+scales*u)
         except TrialRejected:
             return np.inf
 

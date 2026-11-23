@@ -7,8 +7,8 @@ VMEC + NESTOR solve, which balances only |B| and leaves the tangential field
 jump free.  ``COIL_CASE`` selects the case, and the case and its settings are
 parameters at the top of this file (the table below: seed, coils, limits,
 targets and run settings); the design variables are the coil shapes and currents,
-PHIEDGE and, with ``BOOTSTRAP``, the current spline values and CURTOR --
-except with ``BOOTSTRAP_IN_SOLVE`` (Redl): then the current is solved with the
+PHIEDGE and, with ``BOOTSTRAP``, the current spline values and CURTOR.
+With ``BOOTSTRAP_IN_SOLVE`` (Redl) the current is instead solved with the
 boundary, Redl's on every half-grid surface, and neither its values nor the
 bootstrap-mismatch row enter the optimization.  A row holds the axis |B| at
 ``B0``, and where the case sets ``VACUUM_IOTA_FLOOR`` a row floors the vacuum
@@ -25,16 +25,11 @@ example of the same problem.
         --output runs/three-term-qa4
 
 The flags are what differs from one launch to the next: ``--output``, ``--steps``, ``--modes``, ``--ns``,
-``--labelling``, ``--restart``, ``--seed-run`` and ``--edge-target``.
+``--labelling``, ``--restart`` and ``--seed-run``.
 
-``--edge-target <json>`` adds a divertor target outside the plasma (``EDGE_TARGET`` lists its entries): pairs of
-circular coils about the Z axis and a closed field line of the coils' plus the plasma's field, an X-line, with
-limits on its tangent map's trace, its distances to the plasma and the coils, the reach of its two outer legs and
-a vacuum vessel between them and the coils.  A restart continues the run's own target, line and pairs.
-
-The boundary's labelling is ``flat_arc`` with its gauge recipe (``FLAT_ARC_GAUGE``) and smooth Mercier, clearance
-and mirror rows (``MERCIER_SMOOTH``, ``CLEARANCE_SMOOTH``, ``MIRROR_SMOOTH``); ``--labelling equal_arc`` is the
-control, with the rows' hard extremes.
+The boundary's labelling is ``flat_arc`` with follow: the label rows are set again at every accepted step, and a
+trial is its fit under them.  ``--labelling equal_arc`` is the control.  The Mercier, clearance and mirror rows are
+smooth for both (``MERCIER_SMOOTH``, ``CLEARANCE_SMOOTH``, ``MIRROR_SMOOTH``).
 
 ``--seed-run <run>`` starts from another run's calibrated deck and fitted
 coils; ``--restart <run>`` continues a saved run, on another ``--ns`` too.
@@ -44,7 +39,7 @@ counts and the peak GPU memory.
 """
 
 import argparse
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import json
 import math
 import os
@@ -58,16 +53,45 @@ import numpy as np
 
 # ---- cases -----------------------------------------------------------------------------------------------------------
 # COIL_CASE selects the case. The values are ellipse5's; the blocks after them override them per case.
+# The settings are decided in this order, a later stage overriding an earlier one:
+#   1. the defaults (ellipse5's);
+#   2. the case (the CASE blocks);
+#   3. "-tok": the near-axisymmetric seed and its Ohmic current;
+#   4. the variant, "-merc" or "-jbs";
+#   5. the aspect, "-A<aspect>": seed and aspect band;
+#   6. COIL_LIMIT_FACTORS: the coil limits that follow the aspect band and the clearance;
+#   7. the recipe case (the full COIL_CASE): beta, bootstrap, the current's treatment and run settings.
+# The current's treatment, from its four flags. CURRENT_CONSTRAINT or FIXED_CURRENT switch BOOTSTRAP_IN_SOLVE off.
+#   BOOTSTRAP off                         the deck's current is an input: no design variable, no mismatch row
+#   BOOTSTRAP, BOOTSTRAP_IN_SOLVE (Redl)  solved with every boundary fit: no design variable, no mismatch row
+#   BOOTSTRAP, CURRENT_CONSTRAINT         design variables (knot values and CURTOR), held by the mismatch row
+#   BOOTSTRAP, FIXED_CURRENT              held at the seed's or the restart's: no design variable, no mismatch row
+# BOOTSTRAP with none of the other three, or BOOTSTRAP_IN_SOLVE with the DKX model, runs as CURRENT_CONSTRAINT.
 DATA = Path(__file__).resolve().parents[1] / "data"
-COIL_CASE = CASE = os.environ.get("COIL_CASE", "ellipse5")  # COIL_CASE: the full name, CASE: without its suffixes
-# A "-merc" or "-jbs" suffix runs the case with a Mercier floor or a bootstrap-current term (MERCIER_FLOOR,
-# CURRENT_IOTA_WEIGHT below), e.g. qa4-beta-merc.
-VARIANT = next((v for v in ("-merc", "-jbs") if CASE.endswith(v)), "")
-CASE = CASE.removesuffix(VARIANT)
-# An "-A<aspect>" suffix (e.g. qi6-beta-A8) moves a seeded case to that aspect ratio: seed, aspect band +-0.1 and the
-# coil limits that follow it.
-ASPECT = float(CASE.rsplit("-A", 1)[1]) if "-A" in CASE else None
-CASE = CASE.rsplit("-A", 1)[0] if ASPECT else CASE
+
+
+def parse_case(name):
+    """Split a case name ``<base>[-tok][-A<aspect>][-merc|-jbs]`` into ``(base, aspect, variant)``.
+
+    The suffixes are read from the end of the name:
+
+    - the variant, "-merc" or "-jbs" ("" without one), runs the case with a Mercier floor or a bootstrap-current
+      term (``MERCIER_FLOOR``, ``CURRENT_IOTA_WEIGHT``), e.g. qa4-beta-merc;
+    - the aspect, the number after the last "-A" (None without one), moves a seeded case to that aspect ratio:
+      seed, aspect band +-0.1 and the coil limits that follow it, e.g. qi6-beta-A8;
+    - "-tok" is not split off.  It stays at the end of the base, where the case blocks read it.
+
+    An aspect of 0 is returned but its "-A0" stays in the base.
+    """
+    variant = next((v for v in ("-merc", "-jbs") if name.endswith(v)), "")
+    name = name.removesuffix(variant)
+    aspect = float(name.rsplit("-A", 1)[1]) if "-A" in name else None
+    return (name.rsplit("-A", 1)[0] if aspect else name), aspect, variant
+
+
+COIL_CASE = os.environ.get("COIL_CASE", "ellipse5")  # the full name
+CASE, ASPECT, VARIANT = parse_case(COIL_CASE)        # CASE: the name without its aspect and variant suffixes
+MU0 = 4e-7 * np.pi                 # T m / A
 RESOLUTION = (8, 8, 51)            # MPOL, NTOR, NS of the optimization solves
 GRID = (64, 64)                    # NTHETA, NZETA
 EQUILIBRIUM_FTOL = 1e-15
@@ -82,12 +106,13 @@ COIL_CURRENT_STEP = 0.06           # coordinate scale of the relative coil-curre
 PF_CURRENT_STEP = 0.2              # coordinate scale of a circular coil pair's current change, in 100 kA
 PF_SHAPE_STEP = 0.02               # coordinate scale of a pair's shape amplitude changes [m]
 PF_GEOMETRY_STEP = 0.05            # coordinate scale of a pair's radius and height changes [m]
-# --edge-target: the entries of its JSON file and their values without one.  Lengths in m.
+# --edge-target: a divertor target outside the plasma, the entries of its JSON file and their values without one.
+# Lengths in m.  A restart continues the run's own target (edge_target.json), line (edge_line.json) and pairs (pf.json).
 EDGE_TARGET = dict(
     line=None,             # a closed field line outside the plasma: benchmarks/edge_fixed_points.py's
-    line_index=0,          # fixed_points.json and the entry of its total field (restart: the run's edge_line.json)
+    line_index=0,          # fixed_points.json and the entry of its total field
     pf_coils=None,         # [[R, Z, I], ...]: pairs of circular coils of radius R at +-Z with current I [A]; the
-                           # currents are design variables (restart: the run's pf.json)
+                           # currents are design variables
     pf_fixed=False,        # hold the pairs' currents
     pf_geometry=False,     # the pairs' radii and heights are design variables too
     pf_shape=None,         # K: bend the pairs with the field period, K cosine amplitudes of each radius and K sine
@@ -112,14 +137,12 @@ EDGE_TARGET = dict(
     vessel_gap=None,       # the plasma boundary and the line at least this far inside the vessel
     vessel_coils=None,     # the coils and the pairs at least this far outside it
     vessel_legs=None,      # each outer leg reaches at least this far beyond it
-    vc_grid=64,            # virtual-casing grid per field period of the field outside the plasma (direct quadrature:
+    vc_grid=64)            # virtual-casing grid per field period of the field outside the plasma (direct quadrature:
                            # the line stays a few grid spacings off the boundary)
-    conductor_weight=0.0,  # the loss adds this times the coils' total |current| x length [MA m]
-    loss_scale=1.0)        # the optimizer minimizes this times the loss: SLSQP starts from an identity Hessian, so
-                           # its first steps are the size of the scaled gradient
 
 # Run settings; the recipe cases set theirs after the case table.
 BETA = 0.0                         # plasma beta (BETA_DEFINITION), a fraction
+PRESSURE_SHAPE = (1.0, -1.0)       # pressure ~ this power series in s (AM), scaled to BETA
 BOOTSTRAP = False                  # kinetic profiles and a self-consistent bootstrap current (needs BETA > 0)
 # The current is an input, as in VMEC (CURRENT_KNOTS values and CURTOR are design variables), held self-consistent
 # by a constraint row, instead of solved with every equilibrium (BOOTSTRAP_IN_SOLVE).
@@ -129,13 +152,17 @@ COIL_FIT = True                    # refit the coils to the finite-beta seed (Fa
 COIL_POINT_ROWS = False            # a coil-limit row per sample point instead of each coil's extreme
 SAVE_EVERY = 1                     # accepted steps between saved coils, WOUT and deck
 MAX_ITERATIONS = None              # VMEC iteration cap of every solve (None: the deck's)
-VC_GRID = 48                       # virtual-casing grid points per field period, each angle
-# Virtual-casing singular quadrature (NT, NP); None: (4 nfp VC_GRID, 2 VC_GRID), 384 x 96 for nfp 2 (grid x grid
-# leaves a ~3e-4 tangential plasma-field error; see ThreeTermsModel).
-QUADRATURE = None
+# Virtual-casing grid points per field period, each angle. Its singular quadrature (NT, NP) is
+# (4 nfp VC_GRID, 2 VC_GRID), 384 x 96 for nfp 2 (grid x grid leaves a ~3e-4 tangential plasma-field error; see
+# ThreeTermsModel).
+VC_GRID = 48
 CHUNK = 8                          # Jacobian columns per batch (memory)
-TRIAL_FTOL = 1e-3                  # relative cost change at which a trial's boundary steps stop
-MAX_BOUNDARY_RESIDUAL = 0.05       # largest interface RMS (B.n, pressure balance or K, over |B|) of a solved trial
+BOUNDARY_FTOL = 1e-3               # relative cost change at which a trial's boundary steps stop
+BOUNDARY_MAX_RESIDUAL = 0.05       # largest interface RMS (B.n, pressure balance or K, over |B|) of a solved trial
+OPTIMIZER_FTOL = 1e-10
+KKT_ACTIVE = 1e-3                  # step log: a scaled constraint row this close to its bound counts as active
+PHIEDGE_STEP = 0.05                # coordinate scale of the relative PHIEDGE change
+REGRID_MIN_ITERATIONS = 60000      # least VMEC iteration cap of a restart on another radial grid (radial_regrid)
 
 # BOOTSTRAP: Landreman-Buller-Drevlak kinetic profiles ne ~ 1 - s^5, Te = Ti ~ 1 - s, at the
 # beta and collisionality of a Helios-like reactor (n T ~ B^2 and nu* ~ n R / T^2 held), and a
@@ -146,12 +173,10 @@ MAX_BOUNDARY_RESIDUAL = 0.05       # largest interface RMS (B.n, pressure balanc
 # the axis one and CURTOR are design variables), its seed DKX's on the same surfaces. With
 # FIXED_CURRENT it is no design variable and no row: the restart's current is held fixed.
 REACTOR_R0, REACTOR_B0, REACTOR_N0, REACTOR_T0 = 8.0, 6.0, 1.5e20, 15.0e3   # m, T, 1/m^3, eV
-REDL_SURFACES = None              # None: every VMEC half-grid surface, as simsopt's RedlGeomVmec
-REDL_N_LAMBDA, REDL_TOLERANCE = 32, 1e-3
+PRESSURE_SHAPE = (1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 1.0)   # (1 - s)(1 - s^5), the power series in s of ne Te
+REDL_N_LAMBDA, REDL_TOLERANCE = 32, 1e-3  # the Redl rows are every VMEC half-grid surface (redl_surfaces)
 PICARD_ITERATIONS, PICARD_TOLERANCE, PICARD_RELAX = 10, 1e-3, 1.0
 BOOTSTRAP_BETA_STEP = 0.01        # a larger BETA is ramped in with its bootstrap current, in steps of at most this
-BOOTSTRAP_BETA_START = None       # set: the ramp first doubles beta from this, so a seed with little vacuum
-                                  # iota stays under its eps iota^2 limit while the bootstrap current grows
 OHMIC_CURRENT = None              # set (A): the seed ramp's prescribed current, blended into the bootstrap one
 CURRENT_KNOTS, CURRENT_STEP = 8, 0.05   # step relative to the largest knot value and to |CURTOR|
 # Redl cases: the current is no design variable but solved with every equilibrium (ThreeTermsModel
@@ -165,7 +190,7 @@ QI_SURFACES = tuple(i / 5 for i in range(1, 6))
 QI_OPTIONS = dict(mboz=12, nboz=12, nphi=61, nalpha=18, n_bounce=21)  # examples/optimization/QI_optimization.py
 MIRROR_LIMIT, MIRROR_MARGIN = None, 0.001  # upper limit on the edge mirror ratio (Bmax - Bmin) / (Bmax + Bmin)
 BOOTSTRAP_MODEL = "redl"          # "dkx": the DKX kinetic <j.B> replaces Redl in the self-consistency row
-DKX_SURFACES, DKX_COLLISION_OPERATOR = None, 0  # None: every half-mesh surface; 0: momentum-conserving Fokker-Planck
+DKX_COLLISION_OPERATOR = 0        # momentum-conserving Fokker-Planck; DKX's rows are every half-mesh surface
 
 # Physical targets, imposed as hard inequalities.
 IOTA_FLOOR, IOTA_MARGIN = 0.41, 0.0005
@@ -178,15 +203,15 @@ MERCIER_S_MIN = 0.2
 # Margin of the Mercier floor. SLSQP holds a row only to its tolerance: DMerc stays strictly positive (and its
 # value near the floor changes with resolution, so a design held closer can lose it there).
 MERCIER_MARGIN = 0.02
-# flat_arc labelling (equal_arc, the control, keeps the hard extremes): the Mercier floor on MERCIER_BANDS radial
-# bands, in each DMerc averaged with weights exp(-DMerc / MERCIER_SMOOTH) (smooth_d_merc), and where a case sets
-# them the coil-plasma clearance as the distances' mean weighted by exp(-d / CLEARANCE_SMOOTH) [m] and the mirror
-# ratio's Bmax, Bmin as |B| averaged with weights exp(+-|B| / MIRROR_SMOOTH) [T].
+# Smooth rows.  A hard extreme (the smallest DMerc, the nearest coil-plasma pair, the largest |B|) switches the
+# surface or point it reads within a short step while its gradient sees only the one it reads now, and at a bound
+# several of them tie: the gradient is then wrong at every step size.  So the Mercier floor is held on MERCIER_BANDS
+# radial bands, in each DMerc averaged with weights exp(-DMerc / MERCIER_SMOOTH) (smooth_d_merc), the coil-plasma
+# clearance is the distances' mean weighted by exp(-d / CLEARANCE_SMOOTH), and the mirror ratio's Bmax, Bmin are
+# |B| averaged with weights exp(+-|B| / MIRROR_SMOOTH).
 MERCIER_SMOOTH, MERCIER_BANDS = 0.01, 4
-CLEARANCE_SMOOTH = MIRROR_SMOOTH = None
-# flat_arc labelling: the gauge is set again at every accepted fit, and where its rows' share of a fit's cost
-# exceeds 1%, after a re-fit without the gauge rows from the reused Jacobian alone.
-FLAT_ARC_GAUGE = dict(gauge_release=True, gauge_refresh=1)
+CLEARANCE_SMOOTH = 5e-4             # m
+MIRROR_SMOOTH = 5e-4                # T
 CURRENT_IOTA_WEIGHT = 0.0          # > 0: the loss adds w/2 iota_I^2 (current_iota), shrinking the bootstrap current
 ASPECT_RANGE = (4.9, 5.1)
 RADIUS_TARGET, RADIUS_TOLERANCE, RADIUS_MARGIN = 1.0, 0.01, 0.001
@@ -200,6 +225,14 @@ LENGTH_LIMIT = 5.0                 # m, each independent coil
 # LENGTH_LIMIT = c_L 2 pi (a + d), CURVATURE_LIMIT = c_k / (a + d), MSC_LIMIT = c_m / (a + d)^2.
 COIL_LIMIT_FACTORS = None          # (c_L, c_k, c_m)
 COIL_FIT_MAXITER = 200             # L-BFGS-B iterations of the free arm's finite-beta coil refit
+# Finite-beta seed coil refit: B.n/|B| unit and penalty weight of the scaled coil rows.
+COIL_FIT_NORMAL_SCALE, COIL_FIT_WEIGHT = 1.0e-3, 1.0e3
+# The refit repeats with ten times the weight until no scaled coil row is below -COIL_FIT_SLACK (at most
+# COIL_FIT_ROUNDS fits): the optimizer starts with the coil limits met to 2%.
+COIL_FIT_SLACK, COIL_FIT_ROUNDS = 0.02, 5
+COIL_FIT_GRID = (37, 32)           # NPHI, NTHETA of the seed's plasma-vacuum interface in the coil refit
+COIL_FIT_BOX = 5.0                 # coil refit: largest change of a coil Fourier mode, in units of COIL_STEP
+SURFACE_GRID = (61, 64)            # NPHI, NTHETA of the plasma boundary in the coil-plasma clearance
 CURVATURE_LIMIT = 5.0              # 1/m, everywhere along each coil
 MSC_LIMIT = 5.0                    # 1/m^2, each coil
 COIL_DISTANCE_LIMIT = 0.15         # m, including symmetry copies
@@ -211,7 +244,8 @@ if CASE == "ellipse5-beta7":
     # Helios-like: a low iota floor, BETA on axis, the bootstrap current supplying the rest of the transform.
     BETA_DEFINITION = "axis"
     IOTA_FLOOR = 0.16
-    PICARD_ITERATIONS, PICARD_RELAX = 30, 0.5  # damped: the current dominates iota (bootstrap.self_consistent_bootstrap)
+    # damped: the current dominates iota (bootstrap.self_consistent_bootstrap)
+    PICARD_ITERATIONS, PICARD_RELAX = 30, 0.5
 elif CASE in ("qa3", "qh", "qi"):
     COILS_FILE = DATA / f"ESSOS_coils_{CASE.replace('-', '_')}.json"
     COIL_ORDER = 8
@@ -251,8 +285,23 @@ elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta"):
         SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, MIRROR_LIMIT = (4, 6.0, 0.7), None, "QI", (5.9, 6.1), 0.21
         # Stellaris (Lion et al. 2025): iota 0.86 on axis to 0.98 at the edge, below the 4/4 islands
         IOTA_FLOOR, IOTA_CEILING, BOOTSTRAP_MODEL = 0.86, 0.98, "dkx"
-        CLEARANCE_SMOOTH = MIRROR_SMOOTH = 5e-4
         COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.08, 0.15
+elif CASE == "qiw7x-beta":
+    # QI from W7-X: the standard configuration's boundary scaled to R0 = 1 m (examples/data/input.qiw7x_beta2p5, the
+    # pressure shape of simsopt's finite-beta W7-X deck, zero net current), and our own stage-two coils for it at
+    # 2.5 % beta: 5 per half period, order 12, fitted (cases/qa-pwo-lhk8-13/modular_coils_alm.py) under Gil et al.
+    # (2026) Stellaris No.1 limits scaled with the minor radius, length and curvature 1.5x, mean squared curvature
+    # 2x, no force limit (B.n/|B| 0.28 % mean on the seed).
+    INPUT_FILE, COILS_FILE, PRESSURE_SHAPE = DATA / "input.qiw7x_beta2p5", DATA / "ESSOS_coils_qiw7x_beta.json", (
+        1.0, -79317.3617 / 50000, 29317.3617 / 50000)
+    COIL_ORDER, HELICITY, TARGET_NAME, ASPECT_RANGE = 12, None, "QI", (10.65, 10.85)
+    # W7-X's iota 0.87 on axis to 0.95 at the edge, between the 5/6 and 5/5 islands
+    IOTA_FLOOR, IOTA_CEILING = 0.84, 0.99
+    # Working limits, not tight ones: those coils as the driver samples them (768 points per coil; the fit's 120
+    # missed peaks), with room: largest curvature 38.6 /m, coil-coil 0.047 m; the coil-plasma distance 25 % below
+    # the fit's 0.099 m, the hardest coil limit to hold.
+    LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT = 2.79, 40.0, 120.0
+    COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.045, 0.075
 elif CASE != "ellipse5":
     raise ValueError(f"unknown COIL_CASE {CASE!r}")
 if CASE.endswith("-tok"):
@@ -278,14 +327,23 @@ if COIL_LIMIT_FACTORS is not None:
     LENGTH_LIMIT = COIL_LIMIT_FACTORS[0] * 2 * math.pi * _radius
     CURVATURE_LIMIT, MSC_LIMIT = COIL_LIMIT_FACTORS[1] / _radius, COIL_LIMIT_FACTORS[2] / _radius**2
 # The recipe cases: 2.5% beta with the bootstrap current, a coil-limit row per sample point.
+if COIL_CASE == "qiw7x-beta-merc":  # zero net current, as W7-X: no bootstrap row
+    BETA, COIL_POINT_ROWS, SAVE_EVERY, MAX_ITERATIONS = 0.025, True, 5, 60000
+    DESIGN_STEP_SCALE, MERCIER_MARGIN = 1.0, 0.1
 if COIL_CASE in ("qa4-beta-merc", "qa4-beta-tok-merc", "qh4-beta-A8-merc", "qi6-beta-A8", "qi6-beta-A8-merc"):
     BETA, BOOTSTRAP, COIL_POINT_ROWS, SAVE_EVERY = 0.025, True, True, 5
     if COIL_CASE in ("qa4-beta-merc", "qa4-beta-tok-merc"):
         VACUUM_IOTA_FLOOR, IOTA_CEILING, CURRENT_CONSTRAINT = 0.31, 0.495, True
+        COIL_SURFACE_DISTANCE_LIMIT = 0.15  # 25 % below the 0.20 m its coil limits are scaled with
     elif COIL_CASE == "qh4-beta-A8-merc":
         DESIGN_STEP_SCALE, MAX_ITERATIONS, CURRENT_CONSTRAINT, MERCIER_MARGIN = 1.0, 20000, True, 0.1
+        # Gil et al. (2026) Table III scaled to R0 = 1 m, its length per half period over the three coils
+        LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT = 2.81, 10.0, 13.5
+        COIL_SURFACE_DISTANCE_LIMIT = 0.11  # 25 % below the case's 0.15 m: the hardest coil limit to hold
     else:
         DESIGN_STEP_SCALE, MAX_ITERATIONS, FIXED_CURRENT = 1.0, 60000, True
+        # Gil et al. (2026) Table IV scaled to R0 = 1 m, its length per half period over the four coils
+        LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT = 2.56, 19.9, 48.4
         if VARIANT == "-merc":
             MERCIER_MARGIN = 0.1
 if BOOTSTRAP and not BETA > 0:
@@ -294,12 +352,16 @@ if FIXED_CURRENT and not BOOTSTRAP:
     raise ValueError("FIXED_CURRENT needs BOOTSTRAP")
 if CURRENT_CONSTRAINT or FIXED_CURRENT:
     BOOTSTRAP_IN_SOLVE = False
+# Sample points of the coil limits. They follow the case's COIL_ORDER, so they are set after the case blocks.
+CURVATURE_POINTS = max(512, 64*COIL_ORDER)
+DISTANCE_POINTS = max(128, 16*COIL_ORDER)
 
-OPTIMIZER_FTOL = 1e-10
-KKT_ACTIVE = 1e-3                 # step log: a scaled constraint row this close to its bound counts as active
-PHIEDGE_STEP = 0.05  # coordinate scale of the relative PHIEDGE change
-# Finite-beta seed coil refit: B.n/|B| unit and penalty weight of the scaled coil rows.
-COIL_FIT_NORMAL_SCALE, COIL_FIT_WEIGHT = 1.0e-3, 1.0e3
+RECORDED_PARAMETERS = (  # run.json: the settings of the run (restart_input reads FIXED_CURRENT alone)
+    "COIL_CASE", "RESOLUTION", "BETA", "BOOTSTRAP", "CURRENT_CONSTRAINT", "FIXED_CURRENT", "BOOTSTRAP_IN_SOLVE",
+    "COIL_FIT", "COIL_POINT_ROWS", "SAVE_EVERY", "MAX_ITERATIONS", "VC_GRID", "CHUNK",
+    "BOUNDARY_FTOL", "BOUNDARY_MAX_RESIDUAL", "DESIGN_STEP_SCALE", "IOTA_FLOOR", "IOTA_CEILING",
+    "VACUUM_IOTA_FLOOR", "ASPECT_RANGE", "CURRENT_IOTA_WEIGHT", "MERCIER_FLOOR", "MERCIER_MARGIN", "CURRENT_KNOTS",
+    "COILS_FILE", "LENGTH_LIMIT", "CURVATURE_LIMIT", "MSC_LIMIT")
 
 
 # ---- seeds, targets and restarts -------------------------------------------------------------------------------------
@@ -351,7 +413,8 @@ def finite_beta_input(inp, beta, device, am=(1.0, -1.0)):
 
     axis = BETA_DEFINITION == "axis"
     b0 = B0
-    pressure = beta * b0**2 / (8e-7 * np.pi) if axis else beta / (4e-7 * np.pi)
+    # The starting pressure scale; 2 MU0 is mu0 times 2, from beta = 2 mu0 p / B^2.  The corrections below set beta.
+    pressure = beta * b0**2 / (2 * MU0) if axis else beta / MU0
     shape = np.zeros_like(np.asarray(inp.am, dtype=float))
     shape[: len(am)] = am
     inp = replace(inp, am=shape)
@@ -376,11 +439,8 @@ def finite_beta_input(inp, beta, device, am=(1.0, -1.0)):
 
 
 def redl_surfaces():
-    """Surfaces of the Redl self-consistency check: ``REDL_SURFACES``, or by default every VMEC
-    half-grid surface s = (j - 1/2) / (ns - 1) at the run's ns, as simsopt's ``RedlGeomVmec``."""
-
-    if REDL_SURFACES is not None:
-        return np.asarray(REDL_SURFACES)
+    """Surfaces of the Redl self-consistency check: every VMEC half-grid surface s = (j - 1/2) / (ns - 1) at the
+    run's ns, as simsopt's ``RedlGeomVmec``."""
     ns = int(RESOLUTION[2])
     return (np.arange(1, ns) - 0.5) / (ns - 1)
 
@@ -412,8 +472,7 @@ def bootstrap_input(inp, beta, device):
     (``bootstrap.HalfMeshCurrent``), so the first step starts self-consistent.
     Above ``BOOTSTRAP_BETA_STEP`` beta is ramped in steps of at most that size, each step's
     pressure ramp carrying the previous step's bootstrap current, so its transform holds the
-    equilibrium together as beta rises; with ``BOOTSTRAP_BETA_START`` the ramp first doubles
-    beta from that value. With
+    equilibrium together as beta rises. With
     ``OHMIC_CURRENT`` (a near-axisymmetric seed) beta is instead ramped at that prescribed
     current and the current then blended into Redl's.
     Returns the input, the equilibrium and the Redl mismatch.
@@ -427,10 +486,6 @@ def bootstrap_input(inp, beta, device):
     inp = replace(inp, ncurr=1, pcurr_type="power_series", ac=ac, curtor=0.0)
     steps = max(1, math.ceil(round(beta / BOOTSTRAP_BETA_STEP, 9)))
     betas = [beta * k / steps for k in range(1, steps + 1)]
-    start = BOOTSTRAP_BETA_START
-    while start is not None and start < betas[-steps]:  # double up to the first linear stage
-        betas.insert(len(betas) - steps, start)
-        start *= 2
     stages = len(betas)
 
     def picard_at(inp, n_iter):
@@ -447,7 +502,7 @@ def bootstrap_input(inp, beta, device):
         ohmic[:2] = 2.0 * OHMIC_CURRENT * np.array([1.0, -1.0])
         inp = replace(inp, ac=ohmic, curtor=OHMIC_CURRENT)
         for stage_beta in betas:
-            inp, _ = finite_beta_input(inp, stage_beta, device, am=(1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 1.0))
+            inp, _ = finite_beta_input(inp, stage_beta, device, am=PRESSURE_SHAPE)
         for weight in (0.25, 0.5, 0.75):
             boot = picard_at(inp, 1).input  # one Picard step: the Redl current of the current equilibrium
             ac_boot = np.zeros(max(boot.ac.size, ohmic.size))
@@ -460,7 +515,7 @@ def bootstrap_input(inp, beta, device):
         profiles, redl = redl_profiles(inp)
         inp = picard.input
     for stage, stage_beta in enumerate(betas, 1):
-        inp, _ = finite_beta_input(inp, stage_beta, device, am=(1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 1.0))
+        inp, _ = finite_beta_input(inp, stage_beta, device, am=PRESSURE_SHAPE)
         profiles, redl = redl_profiles(inp)
         picard = picard_at(inp, PICARD_ITERATIONS)
         inp = picard.input
@@ -486,7 +541,8 @@ def bootstrap_input(inp, beta, device):
     print(f"Redl seed: n0 = {n0:.4e} 1/m^3, T0 = {t0:.1f} eV, Picard {picard.iterations} iterations "
           f"(converged {picard.converged}), CURTOR = {float(inp.curtor):.1f} A, mismatch = "
           f"{float(redl.total(w)):.3e}; <beta> = {float(w.betatotal):.4%}, iota = "
-          f"{float(min_abs_iota(fixed.state, fixed.runtime)):.4f}..{float(max_abs_iota(fixed.state, fixed.runtime)):.4f}"
+          f"{float(min_abs_iota(fixed.state, fixed.runtime)):.4f}.."
+          f"{float(max_abs_iota(fixed.state, fixed.runtime)):.4f}"
           f", edge R B_phi = {abs(float(w.rbtor)):.5f} T m")
     return inp, fixed, redl
 
@@ -542,7 +598,7 @@ def smooth_d_merc(state, runtime, smooth, bands=1):
 
 def current_iota(state, runtime):
     """``mu0 |I| R0 / (2 pi a^2 B_axis)``: the edge iota the net toroidal current ``I`` gives a cylinder of the
-    plasma's major radius, minor radius ``R0 / aspect`` and axis field -- the current's share of iota."""
+    plasma's major radius, minor radius ``R0 / aspect`` and axis field.  This is the current's share of iota."""
     import jax.numpy as jnp
     from vmex import optimize as opt
     from vmex.core.fields import surface_currents
@@ -560,7 +616,7 @@ def bootstrap_mismatch(inp, redl, device):
     """(state, runtime) -> the bootstrap self-consistency mismatch held under ``REDL_TOLERANCE``.
 
     Redl's, or with ``BOOTSTRAP_MODEL = "dkx"`` the equilibrium's <j.B> against DKX's
-    drift-kinetic one on ``DKX_SURFACES``, in Redl's normalized form (Redl assumes quasisymmetry).
+    drift-kinetic one on every half-mesh surface, in Redl's normalized form (Redl assumes quasisymmetry).
     """
     if BOOTSTRAP_MODEL == "redl":
         return redl.total_state
@@ -578,14 +634,14 @@ def bootstrap_mismatch(inp, redl, device):
 
 
 def dkx_kinetic(inp):
-    """DKX's bootstrap ``<j.B>`` for ``inp``'s kinetic profiles on the ``DKX_SURFACES`` rows (needs ``dkx``).
+    """DKX's bootstrap ``<j.B>`` for ``inp``'s kinetic profiles on every half-mesh surface (needs ``dkx``).
 
     DKX (>= 2.8, vmex's floor) compiles the rows as one batched program with a reverse-mode JVP; E_r = 0.
     """
     from dkx.bootstrap import KineticBootstrapMismatch
 
-    surfaces = redl_surfaces() if DKX_SURFACES is None else DKX_SURFACES
-    return KineticBootstrapMismatch(redl_profiles(inp)[0], surfaces=surfaces, collision_operator=DKX_COLLISION_OPERATOR,
+    return KineticBootstrapMismatch(redl_profiles(inp)[0], surfaces=redl_surfaces(),
+                                    collision_operator=DKX_COLLISION_OPERATOR,
                                     mboz=QI_OPTIONS["mboz"], nboz=QI_OPTIONS["nboz"])
 
 
@@ -646,10 +702,10 @@ def dkx_current(inp, fixed, device):
 def restart_input(run):
     """A finished run's ``input.run`` with its final boundary, PHIEDGE and current profile (``--restart``).
 
-    These are the saved deck's (``input.final``, the deck of ``wout.nc``'s solve) where the run wrote one.  An older
-    run has only the WOUT, which stores the computed current, not exactly the deck's: a run that held its current
-    fixed (``FIXED_CURRENT`` in its ``run.json`` parameters, ``--fixed-current`` in an older one's command) then keeps
-    the current of its ``input.run``.
+    These are the saved deck's (``input.final``, the deck of ``wout.nc``'s solve) where the run wrote one.  Without
+    it they are the WOUT's, which stores the computed current, not exactly the deck's.  A run that held its current
+    fixed (``FIXED_CURRENT`` in its ``run.json`` parameters, or ``--fixed-current`` in its command) then keeps the
+    current of its ``input.run``.
     """
     import vmex as vj
 
@@ -662,7 +718,7 @@ def restart_input(run):
                    **{name: getattr(final, name) for name in names})
 
 
-def radial_regrid(inp, ns, niter=60000):
+def radial_regrid(inp, ns, niter=REGRID_MIN_ITERATIONS):
     """``inp`` on ``ns`` surfaces, reached through its own last grid from a cold interior (a restart with another
     ``--ns``); both grids at the saved tolerance and at least ``niter`` iterations."""
     saved = int(np.asarray(inp.ns_array)[-1])
@@ -686,8 +742,7 @@ def scale_coil_currents(coils, rbtor):
     """Coils with every current scaled so the linked mu0 I / 2 pi is ``rbtor``.
 
     mu0 I / 2 pi is the mean of R B_phi on the loop R = R0, Z = 0, with R0 the
-    case's ``RADIUS_TARGET`` (the seed's RBC(0,0)). The loop used to sit at a
-    hard-coded R = 1 m, which is R0 for every case.
+    case's ``RADIUS_TARGET`` (the seed's RBC(0,0)).
     """
     import jax
     import jax.numpy as jnp
@@ -725,11 +780,6 @@ def total_normal_field(interface, field):
 
 
 # ---- coil limits ----------------------------------------------------------------------------------------------------
-CURVATURE_POINTS = max(512, 64*COIL_ORDER)
-DISTANCE_POINTS = max(128, 16*COIL_ORDER)
-SURFACE_GRID = (61, 64)
-
-
 def coil_limits():
     """The case's coil limits and margins as ``vj.CoilLimits`` (self clearance 1e-6 m, minimum speed 1e-4)."""
     import vmex as vj
@@ -753,56 +803,15 @@ def parse_args(argv=None):
     parser.add_argument("--seed-run", type=Path, help="start from another run's input.run and coils.initial.json "
                         "(its calibrated deck and fitted coils), skipping the bootstrap ramp and the coil fit")
     parser.add_argument("--labelling", choices=("flat_arc", "equal_arc"), default="flat_arc",
-                        help="the boundary's poloidal labelling rows: the seed fit's flat tangential directions "
-                        "held by equal arc, with the gauge recipe and the smooth rows (flat_arc), or equal arc length "
-                        "of the current surface, the control (equal_arc); see vmex.ThreeTermsConfig")
+                        help="the boundary's poloidal labelling rows: label rows on the fit's flat tangential "
+                        "directions, set again at every accepted step (flat_arc), or equal arc length of the "
+                        "current surface, the control (equal_arc); see vmex.ThreeTermsConfig")
     parser.add_argument("--edge-target", type=Path, metavar="JSON",
                         help="a divertor target outside the plasma: the entries of EDGE_TARGET that differ from "
                         "their values there (default with --restart: the run's edge_target.json)")
     args = parser.parse_args(argv)
     args.coils = COILS_FILE if args.restart is None else args.restart / "coils.json"
     return args
-
-
-def edge_target(args, out):
-    """``EDGE_TARGET`` with the entries of ``--edge-target``, as a namespace; ``out/edge_target.json`` records it.
-
-    With ``--restart`` the file, the line and the pairs default to the run's ``edge_target.json``, ``edge_line.json``
-    and ``pf.json``; ``pf_saved_shape`` is the shape of that run's pairs.  File names in the target are relative to
-    its own folder.
-    """
-    from types import SimpleNamespace
-
-    source = args.edge_target
-    if source is None and args.restart is not None and (args.restart / "edge_target.json").exists():
-        source = args.restart / "edge_target.json"
-    given = {} if source is None else json.loads(source.read_text())
-    if set(given) - set(EDGE_TARGET):
-        raise ValueError(f"unknown --edge-target entries {sorted(set(given) - set(EDGE_TARGET))}")
-    target = SimpleNamespace(**{**EDGE_TARGET, **given}, pf_saved_shape=None)
-    for name in ("line", "vessel"):
-        if getattr(target, name) is not None:
-            setattr(target, name, (source.parent / getattr(target, name)).resolve())
-    if source is not None and args.restart is not None:
-        if target.pf_coils is None and (args.restart / "pf.json").exists():
-            saved = json.loads((args.restart / "pf.json").read_text())
-            target.pf_coils = [list(v) for v in zip(saved["radius_m"], saved["height_m"], saved["current_a"])]
-            target.pf_saved_shape = saved.get("shape_m")
-        if target.line is None and (args.restart / "edge_line.json").exists():
-            target.line = args.restart / "edge_line.json"  # the run's own line at its last save
-    needs_line = ("trace", "gap", "coil_distance", "wall", "outer_legs", "leg_coils", "vessel_gap", "vessel_legs")
-    if target.line is None and any(getattr(target, name) is not None for name in needs_line):
-        raise ValueError("the edge limits need a line")
-    if target.vessel is None and (target.vessel_gap, target.vessel_coils, target.vessel_legs) != (None,) * 3:
-        raise ValueError("the vessel limits need a vessel")
-    if not target.pf_coils and (target.pf_geometry or target.pf_shape or target.pf_coil_distance is not None
-                                or target.pf_current_max is not None or target.pf_length_max is not None):
-        raise ValueError("the pf entries need pf_coils")
-    if source is not None:
-        record = {name: str(value) if isinstance(value, Path) else value for name, value in vars(target).items()
-                  if name in EDGE_TARGET and name not in ("line", "pf_coils")}  # those two: the run's own saves
-        (out / "edge_target.json").write_text(json.dumps(record, indent=1) + "\n")
-    return target
 
 
 def fit_coils_to_plasma(coils, wout, inp):
@@ -813,7 +822,7 @@ def fit_coils_to_plasma(coils, wout, inp):
     from scipy.optimize import minimize
     import vmex as vj
 
-    interface = vj.PlasmaVacuumInterface.from_wout(wout, nphi=37, ntheta=32)
+    interface = vj.PlasmaVacuumInterface.from_wout(wout, nphi=COIL_FIT_GRID[0], ntheta=COIL_FIT_GRID[1])
     surface = surfacerzfourier_from_boundary(jnp.asarray(inp.rbc), jnp.asarray(inp.zbs), inp.nfp,
                                              nphi=SURFACE_GRID[0], ntheta=SURFACE_GRID[1])
     x0 = jnp.asarray(coils.curves.dofs).ravel()
@@ -825,31 +834,31 @@ def fit_coils_to_plasma(coils, wout, inp):
     def normal_field_rms(new):
         return weighted_rms(interface.weights, total_normal_field(interface, coil_field(new)))
 
-    def objective(u):
-        new = coils_from_u(u)
-        rows = jnp.concatenate([limits.rows(new), jnp.atleast_1d(
+    def limit_rows(new):
+        return jnp.concatenate([limits.rows(new), jnp.atleast_1d(
             (limits.surface_clearance(new, surface) - COIL_SURFACE_DISTANCE_LIMIT - DISTANCE_MARGIN)
             / COIL_SURFACE_DISTANCE_LIMIT)])
+
+    def objective(u, weight):
+        new = coils_from_u(u)
         return (0.5 * (normal_field_rms(new) / COIL_FIT_NORMAL_SCALE)**2
-                + 0.5 * COIL_FIT_WEIGHT * jnp.sum(jnp.minimum(rows, 0.0)**2))
+                + 0.5 * weight * jnp.sum(jnp.minimum(limit_rows(new), 0.0)**2))
 
     value_and_grad = jax.jit(jax.value_and_grad(objective))
-    before = float(normal_field_rms(coils))
-    fit = minimize(lambda u: tuple(map(np.asarray, value_and_grad(jnp.asarray(u)))), np.zeros(x0.size), jac=True,
-                   method="L-BFGS-B", bounds=[(-5.0, 5.0)] * x0.size,
-                   options=dict(maxiter=COIL_FIT_MAXITER, maxcor=20, ftol=1e-15, gtol=1e-12))
-    fitted = coils_from_u(jnp.asarray(fit.x))
-    print(f"[coil fit] {fit.nit} L-BFGS-B iterations ({fit.message}): (B_coils + B_plasma).n/|B| RMS "
-          f"{before:.3e} -> {float(normal_field_rms(fitted)):.3e} on the fixed-boundary seed", flush=True)
+    before, u, weight = float(normal_field_rms(coils)), np.zeros(x0.size), COIL_FIT_WEIGHT
+    for _ in range(COIL_FIT_ROUNDS):
+        fit = minimize(lambda v: tuple(map(np.asarray, value_and_grad(jnp.asarray(v), weight))), u, jac=True,
+                       method="L-BFGS-B", bounds=[(-COIL_FIT_BOX, COIL_FIT_BOX)] * x0.size,
+                       options=dict(maxiter=COIL_FIT_MAXITER, maxcor=20, ftol=1e-15, gtol=1e-12))
+        u, fitted = fit.x, coils_from_u(jnp.asarray(fit.x))
+        slack = float(jnp.min(limit_rows(fitted)))
+        print(f"[coil fit] {fit.nit} L-BFGS-B iterations ({fit.message}): (B_coils + B_plasma).n/|B| RMS "
+              f"{before:.3e} -> {float(normal_field_rms(fitted)):.3e} on the fixed-boundary seed, "
+              f"smallest scaled coil row {slack:.4f}", flush=True)
+        if slack >= -COIL_FIT_SLACK:
+            break
+        weight *= 10.0
     return fitted
-
-
-RECORDED_PARAMETERS = (  # run.json: the settings of the run (restart_input reads FIXED_CURRENT)
-    "COIL_CASE", "RESOLUTION", "BETA", "BOOTSTRAP", "CURRENT_CONSTRAINT", "FIXED_CURRENT", "BOOTSTRAP_IN_SOLVE",
-    "COIL_FIT", "COIL_POINT_ROWS", "SAVE_EVERY", "MAX_ITERATIONS", "VC_GRID", "QUADRATURE", "CHUNK", "TRIAL_FTOL",
-    "MAX_BOUNDARY_RESIDUAL", "DESIGN_STEP_SCALE", "IOTA_FLOOR", "IOTA_CEILING", "VACUUM_IOTA_FLOOR",
-    "ASPECT_RANGE", "CURRENT_IOTA_WEIGHT", "MERCIER_FLOOR", "MERCIER_MARGIN", "CURRENT_KNOTS", "COILS_FILE",
-    "LENGTH_LIMIT", "CURVATURE_LIMIT", "MSC_LIMIT")
 
 
 def write_run_record(out, args):
@@ -910,30 +919,26 @@ def write_run_record(out, args):
     (out / "run.json").write_text(json.dumps(record, indent=1) + "\n")
 
 
-def main(argv=None):
-    global RESOLUTION
-    args = parse_args(argv)
-    RESOLUTION = (*(args.modes or RESOLUTION[:2]), args.ns or RESOLUTION[2])
-    out = args.output.resolve()
-    out.mkdir(parents=True, exist_ok=False)
-    write_run_record(out, args)
-    os.environ["JAX_ENABLE_X64"] = "1"
-    # The vacuum-iota solve runs inside a jax.pure_callback; a GPU program XLA compiles there (its Krylov
-    # certification fallback) deadlocks in the autotuner, which waits on the device the callback holds.
-    os.environ["XLA_FLAGS"] = (os.environ.get("XLA_FLAGS", "") + " --xla_gpu_autotune_level=0").strip()
-    os.environ.setdefault("JAX_PLATFORMS", "cuda,cpu")
+def current_in_solve():
+    """Whether the Redl current is solved with every boundary fit (``BOOTSTRAP`` with ``BOOTSTRAP_IN_SOLVE``, Redl)."""
+    return BOOTSTRAP and BOOTSTRAP_IN_SOLVE and BOOTSTRAP_MODEL == "redl"
 
-    import jax
-    import jax.numpy as jnp
-    from essos.coils import Coils
-    from essos.surfaces import surfacerzfourier_from_boundary
+
+def build_seed(args, out):
+    """The run's deck, written to ``input.run``: a fresh seed, a ``--seed-run`` deck or a ``--restart`` deck.
+
+    Returns ``(inp, fixed, redl, profiles, regrid)``:
+
+    - ``fixed`` is the fresh seed's fixed-boundary solve (None for a restart or a seed run);
+    - ``redl`` is the bootstrap mismatch of the constraint row (None where the case has no such row);
+    - ``profiles`` are the kinetic profiles of a current solved with the boundary (None otherwise);
+    - ``regrid`` tells that a restart continues on another radial grid.
+
+    A seed run also sets ``args.coils`` to its fitted coils.
+    """
     import vmex as vj
-    from vmex import optimize as opt
-    from vmex.core import implicit as im
-    from vmex.core.wout import wout_from_state
 
-    started = time.monotonic()
-    inp, redl = seed_input(), None
+    inp, fixed, redl = seed_input(), None, None
     if MAX_ITERATIONS:  # before the seed is built: its beta ramp and current blend solve with the same cap
         inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), MAX_ITERATIONS))
     if args.restart is not None:
@@ -946,7 +951,7 @@ def main(argv=None):
     elif BOOTSTRAP:
         inp, fixed, redl = bootstrap_input(inp, BETA, "gpu")
     else:
-        inp, fixed = finite_beta_input(inp, BETA, "gpu")
+        inp, fixed = finite_beta_input(inp, BETA, "gpu", am=PRESSURE_SHAPE)
     if args.modes and (args.restart is not None or args.seed_run is not None):  # a saved run at another resolution
         inp = inp.change_resolution(mpol=args.modes[0], ntor=args.modes[1])
     saved_ns = int(np.asarray(inp.ns_array)[-1])
@@ -954,84 +959,160 @@ def main(argv=None):
     if regrid:
         inp = radial_regrid(inp, args.ns)
         print(f"[restart] radial grids {saved_ns} -> {args.ns}", flush=True)
-    fold = BOOTSTRAP and BOOTSTRAP_IN_SOLVE and BOOTSTRAP_MODEL == "redl"
+    fold = current_in_solve()
     profiles = redl_profiles(inp)[0] if fold else None
     redl = None if fold or FIXED_CURRENT else redl
     if MAX_ITERATIONS:
         inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), MAX_ITERATIONS))
     inp.to_indata(out / "input.run")
+    return inp, fixed, redl, profiles, regrid
+
+
+def build_design(args, out, inp, fixed):
+    """The coils, written to ``coils.initial.json``, and the chart of the design variables (``vj.CoilDesign``).
+
+    A fresh seed's coils are scaled to the seed's edge R B_phi and, at finite beta, refitted to it (``COIL_FIT``).
+    The design variables, in order: PHIEDGE, the plasma current (knot values and CURTOR, where it is a design
+    variable), the base-coil currents and the coil Fourier modes.
+    """
+    from essos.coils import Coils
+    import vmex as vj
+    from vmex import optimize as opt
 
     coils = resize_coils(Coils.from_json(str(args.coils)), COIL_ORDER, N_SEGMENTS)
     if args.restart is None and args.seed_run is None:
         coils = scale_coil_currents(coils, abs(float(fixed.wout.rbtor)))
         if BETA > 0 and COIL_FIT:
             coils = fit_coils_to_plasma(coils, fixed.wout, inp)
+    elif args.seed_run is not None and float(np.min(coil_limits().rows(coils))) < -COIL_FIT_SLACK:
+        # the seed run's coils were fitted under other limits: fit them to its fixed-boundary plasma under these
+        fixed = opt.solve_equilibrium(replace(inp, lfreeb=False), device="gpu", raise_on_max_iterations=True,
+                                      polish_force_balance=False)
+        coils = fit_coils_to_plasma(coils, fixed.wout, inp)
     coils.to_json(str(out / "coils.initial.json"))
     coils0 = Coils.from_json(str(out / "coils.initial.json"))
-    current = np.r_[np.asarray(inp.ac_aux_f)[:-1], inp.curtor] if BOOTSTRAP and not fold and not FIXED_CURRENT else None
+    current_is_design = BOOTSTRAP and not current_in_solve() and not FIXED_CURRENT
+    current = np.r_[np.asarray(inp.ac_aux_f)[:-1], inp.curtor] if current_is_design else None
     current_dofs = tuple(np.flatnonzero(np.asarray(coils0.dofs_currents_raw))) if FREE_COIL_CURRENTS else ()
     scales = DESIGN_STEP_SCALE * np.r_[
         [PHIEDGE_STEP] * FREE_PHIEDGE, [CURRENT_STEP] * (0 if current is None else current.size),
         [COIL_CURRENT_STEP] * len(current_dofs),
         COIL_STEP / np.broadcast_to(np.asarray(coils0.curves.scaling), coils0.dofs_curves.shape).ravel()]
-    chart = vj.CoilDesign(coils0, current_dofs=current_dofs, scales=scales,
-                      phiedge=float(inp.phiedge) if FREE_PHIEDGE else None,
-                      plasma_current=current, plasma_current_spline=True)
-    xp = edge_target(args, out)
-    if xp.pf_coils:
-        from vmex.core.coil_design import PoloidalCoilDesign
+    return vj.CoilDesign(coils0, current_dofs=current_dofs, scales=scales,
+                         phiedge=float(inp.phiedge) if FREE_PHIEDGE else None,
+                         plasma_current=current, plasma_current_spline=True)
 
-        # the restarted run's shape, padded with zeros to pf_shape modes
-        modes = max(xp.pf_shape or 0, 0 if xp.pf_saved_shape is None else np.shape(xp.pf_saved_shape)[-1])
-        pf_shape = np.zeros((len(xp.pf_coils), 2, modes)) if modes else None
-        if xp.pf_saved_shape is not None:
-            pf_shape[:, :, :np.shape(xp.pf_saved_shape)[-1]] = xp.pf_saved_shape
-        chart = PoloidalCoilDesign(chart, *np.asarray(xp.pf_coils, dtype=float).T, shape=pf_shape, nfp=int(inp.nfp),
-                                   shape_scale=DESIGN_STEP_SCALE * PF_SHAPE_STEP if xp.pf_shape else None,
-                                   current_scale=None if xp.pf_fixed else DESIGN_STEP_SCALE * PF_CURRENT_STEP,
-                                   geometry_scale=DESIGN_STEP_SCALE * PF_GEOMETRY_STEP if xp.pf_geometry else None)
-    qs = target_residual()
-    flat_arc = args.labelling == "flat_arc"
-    clearance_smooth, mirror_smooth = (CLEARANCE_SMOOTH, MIRROR_SMOOTH) if flat_arc else (None, None)
-    mercier_row = (min_d_merc if not flat_arc else
-                   lambda state, runtime: smooth_d_merc(state, runtime, MERCIER_SMOOTH, MERCIER_BANDS))
-    mirror = ((lambda state, runtime: opt.mirror_ratio(state, runtime, smooth=mirror_smooth)),
-              ) if MIRROR_LIMIT else ()
-    ceiling = (max_abs_iota,) if IOTA_CEILING else ()
-    # rows of the trial's fitted boundary (rbc, zbs), differentiated through the boundary fit
-    vacuum = opt.vacuum_iota(inp)
-    vacuum_floor = ((lambda rbc, zbs, x: jnp.min(vacuum(rbc, zbs))),) if VACUUM_IOTA_FLOOR else ()
-    limits = coil_limits()
 
-    # --edge-target: the line's rows (trace of its tangent map, gap to the boundary, distance to the coils, largest
-    # distance to the boundary, spread of its height[, the two outer legs' reach][, their distance to the coils]
-    # [, the boundary's and the line's depth inside the vessel][, the outer legs' reach beyond it]), NaN where
-    # Newton's method from the line's last accepted nodes does not converge.
-    def at_least(value, count=1):
-        return [] if value is None else [(value, np.inf, 0.01)] * count
+# ---- the edge target -------------------------------------------------------------------------------------------------
+def edge_target(args, out):
+    """``EDGE_TARGET`` with the entries of ``--edge-target``, as a namespace; ``out/edge_target.json`` records it.
 
-    edge_bounds = [] if xp.line is None else [
-        tuple(xp.trace or (-np.inf, np.inf)) + (1.0,), tuple(xp.gap or (-np.inf, np.inf)) + (0.01,),
-        (-np.inf if xp.coil_distance is None else xp.coil_distance, np.inf, 0.01),
-        (-np.inf, np.inf if xp.wall is None else xp.wall[0] - xp.wall[1], 0.01), (-np.inf, np.inf, 0.01),
-        *at_least(xp.outer_legs, 2), *at_least(xp.leg_coils, 2), *at_least(xp.vessel_gap), *at_least(xp.vessel_legs, 2)]
-    vessel = None if xp.vessel is None else np.asarray(np.load(xp.vessel)["outline"], dtype=float)
-    coil_clearance = max(COIL_SURFACE_DISTANCE_LIMIT, xp.wall[0] + xp.wall[-1] if xp.wall else 0.0)  # outside the wall
-    edge_constrained = any(np.isfinite(b[:2]).any() for b in edge_bounds)
+    With ``--restart`` the file, the line and the pairs default to the run's ``edge_target.json``, ``edge_line.json``
+    and ``pf.json``; ``pf_saved_shape`` is the shape of that run's pairs.  File names in the target are relative to
+    its own folder.
+    """
+    from types import SimpleNamespace
 
-    def wires(x):  # every coil point: the coils' and the pairs'
+    source = args.edge_target
+    if source is None and args.restart is not None and (args.restart / "edge_target.json").exists():
+        source = args.restart / "edge_target.json"
+    given = {} if source is None else json.loads(source.read_text())
+    if set(given) - set(EDGE_TARGET):
+        raise ValueError(f"unknown --edge-target entries {sorted(set(given) - set(EDGE_TARGET))}")
+    target = SimpleNamespace(**{**EDGE_TARGET, **given}, pf_saved_shape=None)
+    for name in ("line", "vessel"):
+        if getattr(target, name) is not None:
+            setattr(target, name, (source.parent / getattr(target, name)).resolve())
+    if source is not None and args.restart is not None:
+        if target.pf_coils is None and (args.restart / "pf.json").exists():
+            saved = json.loads((args.restart / "pf.json").read_text())
+            target.pf_coils = [list(v) for v in zip(saved["radius_m"], saved["height_m"], saved["current_a"])]
+            target.pf_saved_shape = saved.get("shape_m")
+        if target.line is None and (args.restart / "edge_line.json").exists():
+            target.line = args.restart / "edge_line.json"  # the run's own line at its last save
+    needs_line = ("trace", "gap", "coil_distance", "wall", "outer_legs", "leg_coils", "vessel_gap", "vessel_legs")
+    if target.line is None and any(getattr(target, name) is not None for name in needs_line):
+        raise ValueError("the edge limits need a line")
+    if target.vessel is None and (target.vessel_gap, target.vessel_coils, target.vessel_legs) != (None,) * 3:
+        raise ValueError("the vessel limits need a vessel")
+    if not target.pf_coils and (target.pf_geometry or target.pf_shape or target.pf_coil_distance is not None
+                                or target.pf_current_max is not None or target.pf_length_max is not None):
+        raise ValueError("the pf entries need pf_coils")
+    if source is not None:
+        record = {name: str(value) if isinstance(value, Path) else value for name, value in vars(target).items()
+                  if name in EDGE_TARGET and name not in ("line", "pf_coils")}  # those two: the run's own saves
+        (out / "edge_target.json").write_text(json.dumps(record, indent=1) + "\n")
+    return target
+
+
+def with_coil_pairs(chart, xp, nfp):
+    """``chart`` followed by the target's circular coil pairs (``PoloidalCoilDesign``); ``chart`` without pairs."""
+    if not xp.pf_coils:
+        return chart
+    from vmex.core.coil_design import PoloidalCoilDesign
+
+    # the restarted run's shape, padded with zeros to pf_shape modes
+    modes = max(xp.pf_shape or 0, 0 if xp.pf_saved_shape is None else np.shape(xp.pf_saved_shape)[-1])
+    shape = np.zeros((len(xp.pf_coils), 2, modes)) if modes else None
+    if xp.pf_saved_shape is not None:
+        shape[:, :, :np.shape(xp.pf_saved_shape)[-1]] = xp.pf_saved_shape
+    return PoloidalCoilDesign(chart, *np.asarray(xp.pf_coils, dtype=float).T, shape=shape, nfp=nfp,
+                              shape_scale=DESIGN_STEP_SCALE * PF_SHAPE_STEP if xp.pf_shape else None,
+                              current_scale=None if xp.pf_fixed else DESIGN_STEP_SCALE * PF_CURRENT_STEP,
+                              geometry_scale=DESIGN_STEP_SCALE * PF_GEOMETRY_STEP if xp.pf_geometry else None)
+
+
+class EdgeRows:
+    """The target's line and its rows, the extra coil rows of the pairs and the vessel, their log and saves.
+
+    The line's rows, in order: the trace of its tangent map, its gap to the boundary, its distance to the coils, its
+    largest distance to the boundary, the spread of its height[, the two outer legs' reach][, their distance to the
+    coils][, the depth of the boundary and the line inside the vessel][, the outer legs' reach beyond it]; NaN where
+    Newton's method from the line's last accepted nodes does not converge.  The line follows the accepted designs:
+    each solve starts from the nodes of the last accepted one.
+    """
+
+    def __init__(self, xp, inp, chart):
+        import jax
+        import jax.numpy as jnp
+
+        self.xp, self.chart, self.nfp = xp, chart, int(inp.nfp)
+        at_least = lambda value, count=1: [] if value is None else [(value, np.inf, 0.01)] * count  # noqa: E731
+        self.bounds = [] if xp.line is None else [
+            tuple(xp.trace or (-np.inf, np.inf)) + (1.0,), tuple(xp.gap or (-np.inf, np.inf)) + (0.01,),
+            (-np.inf if xp.coil_distance is None else xp.coil_distance, np.inf, 0.01),
+            (-np.inf, np.inf if xp.wall is None else xp.wall[0] - xp.wall[1], 0.01), (-np.inf, np.inf, 0.01),
+            *at_least(xp.outer_legs, 2), *at_least(xp.leg_coils, 2), *at_least(xp.vessel_gap),
+            *at_least(xp.vessel_legs, 2)]
+        self.constrained = any(np.isfinite(b[:2]).any() for b in self.bounds)
+        self.vessel = None if xp.vessel is None else np.asarray(np.load(xp.vessel)["outline"], dtype=float)
+        # with a wall, the coils stay outside it
+        self.clearance = max(COIL_SURFACE_DISTANCE_LIMIT, xp.wall[0] + xp.wall[-1] if xp.wall else 0.0)
+        self.latest, self.guess = {}, None
+        if xp.line is None:
+            return
+        saved = json.loads(xp.line.read_text())
+        entry = saved["total"][xp.line_index]
+        self.guess = dict(R=np.asarray(entry["R_nodes"]), Z=np.asarray(entry["Z_nodes"]), periods=int(saved["periods"]))
+        self.inp = inp
+        self.at = None  # the jitted values and line of an accepted point (step_logger builds it)
+
+    def wires(self, x):
+        """Every coil point: the coils' and the pairs'."""
+        import jax.numpy as jnp
+
+        chart = self.chart
         return jnp.concatenate([chart.coils_from_x(x).gamma.reshape(-1, 3)] + (
-            [chart.poloidal_coils_from_x(x).gamma.reshape(-1, 3)] if xp.pf_coils else []))
+            [chart.poloidal_coils_from_x(x).gamma.reshape(-1, 3)] if self.xp.pf_coils else []))
 
-    if xp.line is not None:
+    def values(self, state, runtime, x, R, Z):
+        """The line's rows and the line, from Newton's method started at the nodes ``R``, ``Z``."""
+        import jax
+        import jax.numpy as jnp
         from vmex.core import periodic_fieldlines as pf
         from vmex.core import virtual_casing as vc
 
-        if VACUUM_IOTA_FLOOR:  # a concrete solve before the jitted rows trace it: its host solve compiles first
-            vacuum(jnp.asarray(inp.rbc), jnp.asarray(inp.zbs))
-        saved = json.loads(xp.line.read_text())
-        entry = saved["total"][xp.line_index]
-        edge_guess = dict(R=np.asarray(entry["R_nodes"]), Z=np.asarray(entry["Z_nodes"]), periods=int(saved["periods"]))
+        xp, nfp, periods, vessel = self.xp, self.nfp, self.guess["periods"], self.vessel
 
         def chunked(f, points, size=1024):  # f of (size, 3) points, a chunk at a time: bounded memory
             n = points.shape[0]
@@ -1039,143 +1120,78 @@ def main(argv=None):
             return jax.lax.map(f, padded).ravel()[:n]
 
         def in_vessel(p):  # signed distance to the vessel, negative inside
-            return pf.vessel_distances(p, vessel, int(inp.nfp))
+            return pf.vessel_distances(p, vessel, nfp)
 
-        def edge_values(state, runtime, x, R, Z):
-            data = vc.surface_field_data_from_state(inp, state, runtime=runtime, nphi=xp.vc_grid, ntheta=xp.vc_grid)
-            parameters_of, field = pf.exterior_field(chart)
-            parameters = parameters_of(data, x)
-            line = pf.periodic_fieldline(field, parameters, R, Z, nfp=int(inp.nfp), periods=edge_guess["periods"],
-                                         max_iterations=30)
-            M = pf.tangent_map(field, parameters, line)
-            coils = wires(x)
-            to_coils = jnp.sqrt(jnp.min(jnp.sum((line.xyz[:, None] - coils[None]) ** 2, axis=-1)))
-            to_plasma = pf.surface_distances(line.xyz, data.gamma, int(inp.nfp))
-            reach = jnp.max(to_plasma)
-            if xp.smooth_reach:  # nodes within ~1/RHO of the farthest all count: no kink where they swap
-                reach = reach + jnp.log(jnp.mean(jnp.exp(xp.smooth_reach * (to_plasma - reach)))) / xp.smooth_reach
-            values = jnp.stack((jnp.trace(M), jnp.min(to_plasma), to_coils, reach, jnp.std(line.Z)))
-            frozen = jax.tree.map(jax.lax.stop_gradient, (parameters, line, M))
-            options = dict(nfp=int(inp.nfp), periods=edge_guess["periods"], iterations=xp.outer_leg_maps)
-            cos, sin = jnp.cos(line.phi[0]), jnp.sin(line.phi[0])
+        data = vc.surface_field_data_from_state(self.inp, state, runtime=runtime, nphi=xp.vc_grid, ntheta=xp.vc_grid)
+        parameters_of, field = pf.exterior_field(self.chart)
+        parameters = parameters_of(data, x)
+        line = pf.periodic_fieldline(field, parameters, R, Z, nfp=nfp, periods=periods, max_iterations=30)
+        M = pf.tangent_map(field, parameters, line)
+        coils = self.wires(x)
+        to_coils = jnp.sqrt(jnp.min(jnp.sum((line.xyz[:, None] - coils[None]) ** 2, axis=-1)))
+        to_plasma = pf.surface_distances(line.xyz, data.gamma, nfp)
+        reach = jnp.max(to_plasma)
+        if xp.smooth_reach:  # nodes within ~1/RHO of the farthest all count: no kink where they swap
+            reach = reach + jnp.log(jnp.mean(jnp.exp(xp.smooth_reach * (to_plasma - reach)))) / xp.smooth_reach
+        values = jnp.stack((jnp.trace(M), jnp.min(to_plasma), to_coils, reach, jnp.std(line.Z)))
+        frozen = jax.tree.map(jax.lax.stop_gradient, (parameters, line, M))
+        options = dict(nfp=nfp, periods=periods, iterations=xp.outer_leg_maps)
+        cos, sin = jnp.cos(line.phi[0]), jnp.sin(line.phi[0])
 
-            def leg_points(leg_r, leg_z):
-                return jnp.stack((leg_r * cos, leg_r * sin, leg_z), axis=-1).reshape(-1, 3)
+        def leg_points(leg_r, leg_z):
+            return jnp.stack((leg_r * cos, leg_r * sin, leg_z), axis=-1).reshape(-1, 3)
 
-            def farthest(distance):  # of each outer leg: the point is found without gradients, then traced with them
-                found = []
-                for stable in (False, True):
-                    far = jnp.argmax(distance(leg_points(*pf.manifold_outer_leg(field, *frozen, stable=stable, **options))))
-                    found.append(distance(leg_points(*pf.manifold_outer_leg(field, parameters, line, M, stable=stable,
-                                                                            index=far, **options))))
-                return jnp.concatenate(found)
+        def farthest(distance):  # of each outer leg: the point is found without gradients, then traced with them
+            found = []
+            for stable in (False, True):
+                far = jnp.argmax(distance(leg_points(*pf.manifold_outer_leg(field, *frozen, stable=stable, **options))))
+                found.append(distance(leg_points(*pf.manifold_outer_leg(field, parameters, line, M, stable=stable,
+                                                                        index=far, **options))))
+            return jnp.concatenate(found)
 
-            if xp.outer_legs is not None:  # the farthest each outer leg gets from the plasma
-                values = jnp.concatenate((values, farthest(lambda p: pf.surface_distances(p, data.gamma, int(inp.nfp)))))
-            if xp.leg_coils is not None:  # the closest each outer leg gets to a coil, inside the vessel or the wall
-                wall = np.inf if xp.wall is None else xp.wall[0]
-                near = lambda p: jnp.sqrt(jnp.min(jnp.sum((p[:, None] - coils[None]) ** 2, axis=-1), axis=1))
-                for stable in (False, True):  # the closest point is found without gradients, then traced with them
-                    R_leg, Z_leg, phi = pf.manifold_outer_leg(field, *frozen, stable=stable, path=True, per_map=128,
-                                                              **options)
-                    phi = jnp.broadcast_to(phi[:, None], R_leg.shape)
-                    points = jnp.stack((R_leg * jnp.cos(phi), R_leg * jnp.sin(phi), Z_leg), axis=-1).reshape(-1, 3)
-                    inside = (chunked(in_vessel, points) <= 0.0 if vessel is not None else
-                              chunked(lambda p: pf.surface_distances(p, data.gamma, int(inp.nfp)), points) <= wall)
-                    angle, sample = jnp.divmod(jnp.argmin(jnp.where(inside, chunked(near, points), jnp.inf)),
-                                               R_leg.shape[1])
-                    R_leg, Z_leg, phi = pf.manifold_outer_leg(field, parameters, line, M, stable=stable, index=sample,
-                                                              path=True, per_map=128, **options)
-                    point = jnp.stack((R_leg[angle] * jnp.cos(phi[angle]), R_leg[angle] * jnp.sin(phi[angle]),
-                                       Z_leg[angle]))
-                    values = jnp.concatenate((values, jnp.sqrt(jnp.min(jnp.sum((point - coils) ** 2, axis=-1)))[None]))
-            if xp.vessel_gap is not None:  # how far inside the vessel the boundary and the line stay
-                boundary = jnp.moveaxis(data.gamma, 0, -1).reshape(-1, 3)
-                values = jnp.concatenate((values, jnp.min(-chunked(in_vessel, jnp.concatenate((boundary, line.xyz))))[None]))
-            if xp.vessel_legs is not None:  # how far beyond the vessel each outer leg gets
-                values = jnp.concatenate((values, farthest(in_vessel)))
-            return jnp.where(line.step < 1e-8, values, jnp.nan), line
+        if xp.outer_legs is not None:  # the farthest each outer leg gets from the plasma
+            values = jnp.concatenate((values, farthest(lambda p: pf.surface_distances(p, data.gamma, nfp))))
+        if xp.leg_coils is not None:  # the closest each outer leg gets to a coil, inside the vessel or the wall
+            wall = np.inf if xp.wall is None else xp.wall[0]
+            near = lambda p: jnp.sqrt(jnp.min(jnp.sum((p[:, None] - coils[None]) ** 2, axis=-1), axis=1))  # noqa: E731
+            for stable in (False, True):  # the closest point is found without gradients, then traced with them
+                R_leg, Z_leg, phi = pf.manifold_outer_leg(field, *frozen, stable=stable, path=True, per_map=128,
+                                                          **options)
+                phi = jnp.broadcast_to(phi[:, None], R_leg.shape)
+                points = jnp.stack((R_leg * jnp.cos(phi), R_leg * jnp.sin(phi), Z_leg), axis=-1).reshape(-1, 3)
+                inside = (chunked(in_vessel, points) <= 0.0 if vessel is not None else
+                          chunked(lambda p: pf.surface_distances(p, data.gamma, nfp), points) <= wall)
+                angle, sample = jnp.divmod(jnp.argmin(jnp.where(inside, chunked(near, points), jnp.inf)), R_leg.shape[1])
+                R_leg, Z_leg, phi = pf.manifold_outer_leg(field, parameters, line, M, stable=stable, index=sample,
+                                                          path=True, per_map=128, **options)
+                point = jnp.stack((R_leg[angle] * jnp.cos(phi[angle]), R_leg[angle] * jnp.sin(phi[angle]),
+                                   Z_leg[angle]))
+                values = jnp.concatenate((values, jnp.sqrt(jnp.min(jnp.sum((point - coils) ** 2, axis=-1)))[None]))
+        if xp.vessel_gap is not None:  # how far inside the vessel the boundary and the line stay
+            boundary = jnp.moveaxis(data.gamma, 0, -1).reshape(-1, 3)
+            values = jnp.concatenate((values, jnp.min(-chunked(in_vessel, jnp.concatenate((boundary, line.xyz))))[None]))
+        if xp.vessel_legs is not None:  # how far beyond the vessel each outer leg gets
+            values = jnp.concatenate((values, farthest(in_vessel)))
+        return jnp.where(line.step < 1e-8, values, jnp.nan), line
 
-        def edge(state, runtime, x):
-            # The guess is read when the row runs, not when it is compiled: it follows the accepted designs (log_step),
-            # so Newton's method starts next to the line however far the line has moved since the start.
-            node = jax.ShapeDtypeStruct(edge_guess["R"].shape, jnp.float64)
-            R, Z = jax.pure_callback(lambda _: (np.asarray(edge_guess["R"], dtype=float),
-                                                np.asarray(edge_guess["Z"], dtype=float)),
-                                     (node, node), jax.lax.stop_gradient(x[0]), vmap_method="sequential")
-            return edge_values(state, runtime, x, R, Z)[0]
+    def row(self, state, runtime, x):
+        """The line's rows at a trial.  The guess is read when the row runs, not when it is compiled."""
+        import jax
+        import jax.numpy as jnp
 
-    def conductor(x):  # the coils' total |current| x length [MA m]
-        from vmex.core.coil_design import ampere_metres
+        node = jax.ShapeDtypeStruct(self.guess["R"].shape, jnp.float64)
+        R, Z = jax.pure_callback(lambda _: (np.asarray(self.guess["R"], dtype=float),
+                                            np.asarray(self.guess["Z"], dtype=float)),
+                                 (node, node), jax.lax.stop_gradient(x[0]), vmap_method="sequential")
+        return self.values(state, runtime, x, R, Z)[0]
 
-        return 1e-6 * ampere_metres(chart.coils_from_x(x), *([chart.poloidal_coils_from_x(x)] if xp.pf_coils else []))
+    def coil_rows(self, x):
+        """The pairs' own limits and the vessel's, each feasible at >= 0 (empty without them)."""
+        import jax.numpy as jnp
 
-    def clearance(rbc, zbs, x):
-        surface = surfacerzfourier_from_boundary(rbc, zbs, inp.nfp, nphi=SURFACE_GRID[0], ntheta=SURFACE_GRID[1])
-        return limits.surface_clearance(chart.coils_from_x(x), surface, smooth=clearance_smooth)
-
-    def loss(state, runtime, x):
-        residuals = qs.residuals_state(state, runtime)
-        current = 0.5 * CURRENT_IOTA_WEIGHT * current_iota(state, runtime) ** 2 if CURRENT_IOTA_WEIGHT else 0.0
-        tape = xp.conductor_weight * conductor(x) if xp.conductor_weight else 0.0
-        return xp.loss_scale * (0.5 * jnp.vdot(residuals, residuals) + current + tape)
-
-    def aspect(state, runtime, x):
-        return opt.aspect_ratio(state, runtime)
-
-    problem = vj.ThreeTermsFreeBoundaryProblem.from_loss(
-        inp, loss, chart.x0, field_from_parameters=chart, plasma_from_parameters=chart.plasma_params_at,
-        scales=chart.scales, names=chart.dof_names,
-        quantities=(min_abs_iota, opt.major_radius, opt.axis_field_strength, *mirror, *ceiling,
-                    *([bootstrap_mismatch(inp, redl, "gpu")] if redl is not None else []),
-                    *([mercier_row] if MERCIER_FLOOR is not None else []),
-                    *([current_iota] if CURRENT_IOTA_WEIGHT else [])),
-        parameter_quantities=(*([edge] if edge_constrained else []), aspect),
-        boundary_quantities=(*vacuum_floor, clearance),
-        config=vj.ThreeTermsConfig(labelling=args.labelling, nphi=VC_GRID, ntheta=VC_GRID, chunk=CHUNK,
-                                   quadrature=QUADRATURE or (4 * int(inp.nfp) * VC_GRID, 2 * VC_GRID),
-                                   bootstrap=profiles,
-                                   bootstrap_helicity=REDL_HELICITY),
-        boundary_ftol=TRIAL_FTOL, boundary_max_residual=MAX_BOUNDARY_RESIDUAL,
-        boundary_start=None if args.restart is None else restart_input(args.restart) if regrid else args.restart / "wout.nc",  # resume at the saved state
-        **(FLAT_ARC_GAUGE if flat_arc else {}))
-    model = problem.model
-    print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
-          f"{chart.size} design coordinates; built in {time.monotonic() - started:.0f} s"
-          + (f"; minimal gauge on {problem.stats['gauge_directions']} directions" if flat_arc else ""), flush=True)
-
-    aspect_lower, aspect_upper = ASPECT_RANGE
-    width, b_width = RADIUS_TOLERANCE - RADIUS_MARGIN, B_AXIS_TOLERANCE - B_AXIS_MARGIN
-    nredl = 0 if redl is None else 1
-    nmerc = MERCIER_BANDS if flat_arc else 1
-    lower, upper, row_scales = zip(
-        (IOTA_FLOOR + IOTA_MARGIN, np.inf, IOTA_FLOOR),
-        (RADIUS_TARGET - width, RADIUS_TARGET + width, RADIUS_TOLERANCE),
-        (B0 - b_width, B0 + b_width, B_AXIS_TOLERANCE),
-        *([(-np.inf, MIRROR_LIMIT - MIRROR_MARGIN, MIRROR_LIMIT)] if mirror else []),
-        *([(-np.inf, IOTA_CEILING - IOTA_MARGIN, IOTA_FLOOR)] if ceiling else []),
-        *([(-np.inf, REDL_TOLERANCE, REDL_TOLERANCE)] * nredl),
-        *([(MERCIER_FLOOR + MERCIER_MARGIN, np.inf, 1.0)] * nmerc if MERCIER_FLOOR is not None else []),
-        *([(-np.inf, np.inf, 1.0)] if CURRENT_IOTA_WEIGHT else []),  # logged; the loss carries it
-        *(edge_bounds if edge_constrained else []),
-        (aspect_lower, aspect_upper, 0.5 * (aspect_upper - aspect_lower)),
-        *([(VACUUM_IOTA_FLOOR + IOTA_MARGIN, np.inf, VACUUM_IOTA_FLOOR)] if vacuum_floor else []),
-        (coil_clearance + DISTANCE_MARGIN, np.inf, COIL_SURFACE_DISTANCE_LIMIT))
-
-    def pf_distance(x):  # smallest distance between the circular pairs and the other coils [m]
-        pairs, others = (c.gamma.reshape(-1, 3) for c in (chart.poloidal_coils_from_x(x), chart.coils_from_x(x)))
-        return jnp.sqrt(jnp.min(jnp.sum((pairs[:, None] - others[None]) ** 2, axis=-1)))
-
-    def coils_off_vessel(x):  # smallest distance [m] of the coils and the pairs outside the vessel
-        from vmex.core.periodic_fieldlines import vessel_distances
-
-        return jnp.min(vessel_distances(wires(x), vessel, int(inp.nfp)))
-
-    def all_coil_rows(x):
-        rows = limits.rows(chart.coils_from_x(x), per_point=COIL_POINT_ROWS)
-        more = []  # the pairs' own limits and the vessel's, each feasible at >= 0
+        xp, chart, more = self.xp, self.chart, []
         if xp.pf_coil_distance is not None:
-            more.append(pf_distance(x) / xp.pf_coil_distance - 1.0)
+            more.append(self.pf_distance(x) / xp.pf_coil_distance - 1.0)
         if xp.pf_shape:
             more.append(1.0 - jnp.max(chart.poloidal_coils_from_x(x).curvature) / xp.pf_curvature)
         if xp.pf_length_max is not None:
@@ -1185,14 +1201,242 @@ def main(argv=None):
         if xp.pf_current_max is not None:
             more.append(1.0 - jnp.max(jnp.abs(chart.pairs_at(x)[2])) / xp.pf_current_max)
         if xp.vessel_coils is not None:
-            more.append(coils_off_vessel(x) / xp.vessel_coils - 1.0)
+            more.append(self.off_vessel(x) / xp.vessel_coils - 1.0)
+        return more
+
+    def pf_distance(self, x):
+        """Smallest distance between the circular pairs and the other coils [m]."""
+        import jax.numpy as jnp
+
+        pairs, others = (c.gamma.reshape(-1, 3) for c in (self.chart.poloidal_coils_from_x(x),
+                                                          self.chart.coils_from_x(x)))
+        return jnp.sqrt(jnp.min(jnp.sum((pairs[:, None] - others[None]) ** 2, axis=-1)))
+
+    def off_vessel(self, x):
+        """Smallest distance [m] of the coils and the pairs outside the vessel."""
+        import jax.numpy as jnp
+        from vmex.core.periodic_fieldlines import vessel_distances
+
+        return jnp.min(vessel_distances(self.wires(x), self.vessel, self.nfp))
+
+    def conductor(self, x):
+        """The coils' total |current| x length [MA m]."""
+        from vmex.core.coil_design import ampere_metres
+
+        chart = self.chart
+        return 1e-6 * ampere_metres(chart.coils_from_x(x), *([chart.poloidal_coils_from_x(x)] if self.xp.pf_coils else []))
+
+    def log(self, state, params, x, model):
+        """The step log's entries of the accepted point; the line's nodes follow it."""
+        import jax
+        import jax.numpy as jnp
+        from vmex.core import implicit as im
+
+        row = {}
+        if self.guess is not None:
+            if self.at is None:
+                self.at = jax.jit(lambda state, params, x, R, Z: self.values(
+                    state, im.runtime_from_params(params, model.cfg), x, R, Z))
+            values, line = self.at(state, params, jnp.asarray(x), jnp.asarray(self.guess["R"]),
+                                   jnp.asarray(self.guess["Z"]))
+            values, at, more = np.asarray(values), 5, {}
+            for name, count, given in (("edge_outer_legs_m", 2, self.xp.outer_legs),
+                                       ("edge_leg_coils_m", 2, self.xp.leg_coils),
+                                       ("vessel_gap_m", 1, self.xp.vessel_gap), ("vessel_legs_m", 2, self.xp.vessel_legs)):
+                if given is not None:
+                    more[name], at = values[at:at + count].tolist() if count > 1 else float(values[at]), at + count
+            row = dict(edge_trace=float(values[0]), edge_gap_m=float(values[1]), edge_coil_distance_m=float(values[2]),
+                       edge_reach_m=float(values[3]), edge_height_spread_m=float(values[4]), **more,
+                       edge_R_m=float(line.R[0]), edge_Z_m=float(line.Z[0]), edge_newton_step_m=float(line.step))
+            if np.all(np.isfinite(values)):
+                self.guess.update(R=np.asarray(line.R), Z=np.asarray(line.Z))
+                self.latest.update(R=float(line.R[0]), Z=float(line.Z[0]), trace=float(values[0]),
+                                   R_nodes=np.asarray(line.R).tolist(), Z_nodes=np.asarray(line.Z).tolist())
+        xj = jnp.asarray(x)
+        if self.xp.pf_coils:
+            row.update({f"pf_{k}": v for k, v in self.chart.pairs_dict(xj).items() if k != "nfp"},
+                       pf_coil_distance_m=float(self.pf_distance(xj)))
+        if self.vessel is not None:
+            row.update(vessel_coils_m=float(self.off_vessel(xj)))
+        row.update(conductor_ma_m=float(self.conductor(xj)))
+        return row
+
+    def save(self, out, x, tag):
+        """``edge_line<tag>.json`` (the layout of benchmarks/edge_fixed_points.py) and ``pf<tag>.json``."""
+        import jax.numpy as jnp
+
+        if self.latest:
+            (out / f"edge_line{tag}.json").write_text(json.dumps(dict(periods=self.guess["periods"], total=[self.latest])))
+        if self.xp.pf_coils:
+            (out / f"pf{tag}.json").write_text(json.dumps(self.chart.pairs_dict(jnp.asarray(x))))
+
+    @staticmethod
+    def text(row):
+        """The step line's part of the edge entries."""
+        return ((f"edge: Tr M={row['edge_trace']:.3f} gap={row['edge_gap_m']:.4f} reach={row['edge_reach_m']:.4f} "
+                 f"dZ={row['edge_height_spread_m']:.4f} coils={row['edge_coil_distance_m']:.4f} "
+                 f"(R, Z)=({row['edge_R_m']:.4f}, {row['edge_Z_m']:.4f}) " if "edge_trace" in row else "")
+                + "".join(f"{label}={','.join(f'{v:.4f}' for v in np.atleast_1d(row[name]))} " for label, name in (
+                    ("outer", "edge_outer_legs_m"), ("leg-coils", "edge_leg_coils_m"), ("vessel-gap", "vessel_gap_m"),
+                    ("vessel-coils", "vessel_coils_m"), ("vessel-legs", "vessel_legs_m")) if name in row)
+                + (f"conductor={row['conductor_ma_m']:.3f} " if "conductor_ma_m" in row else ""))
+
+
+EDGE = None  # main's EdgeRows
+
+
+# ---- constraint rows -------------------------------------------------------------------------------------------------
+ROW_GROUPS = ("state", "parameter", "boundary")
+
+
+@dataclass(frozen=True)
+class ConstraintRow:
+    """A named constraint: ``count`` rows of ``function``, each bounded by ``lower`` and ``upper`` in its units.
+
+    ``group`` names the ``from_loss`` argument that takes the function: "state" for ``quantities(state, runtime)``,
+    "parameter" for ``parameter_quantities(state, runtime, x)`` and "boundary" for
+    ``boundary_quantities(rbc, zbs, x)``.  ``scale`` is the unit the optimizer sees the rows in.
+    """
+    name: str
+    group: str
+    function: object
+    lower: float  # or one per entry of a row with count > 1
+    upper: float
+    scale: float
+    count: int = 1
+
+
+def constraint_rows(inp, chart, redl):
+    """The case's constraints, as the one ordered list of ``ConstraintRow`` that everything else reads.
+
+    The functions handed to ``from_loss`` (``row_functions``), the bounds and scales (``row_bounds``) and the step
+    log's reads of the row vector (``row_slice``) all follow this list.  Returns ``(rows, vacuum, limits)``:
+    ``vacuum`` is the vacuum iota profile of a boundary (``opt.vacuum_iota``) and ``limits`` the coil limits.
+    """
+    import jax.numpy as jnp
+    from essos.surfaces import surfacerzfourier_from_boundary
+    from vmex import optimize as opt
+
+    mercier_row = lambda state, runtime: smooth_d_merc(state, runtime, MERCIER_SMOOTH, MERCIER_BANDS)  # noqa: E731
+    # rows of the trial's fitted boundary (rbc, zbs), differentiated through the boundary fit
+    vacuum = opt.vacuum_iota(inp)
+    limits = coil_limits()
+
+    def clearance(rbc, zbs, x):
+        surface = surfacerzfourier_from_boundary(rbc, zbs, inp.nfp, nphi=SURFACE_GRID[0], ntheta=SURFACE_GRID[1])
+        return limits.surface_clearance(chart.coils_from_x(x), surface, smooth=CLEARANCE_SMOOTH)
+
+    def aspect(state, runtime, x):
+        return opt.aspect_ratio(state, runtime)
+
+    aspect_lower, aspect_upper = ASPECT_RANGE
+    width, b_width = RADIUS_TOLERANCE - RADIUS_MARGIN, B_AXIS_TOLERANCE - B_AXIS_MARGIN
+    Row = ConstraintRow
+    # The order of the list is the order of the rows.  It must be: the state rows, then the parameter rows, then
+    # the boundary rows, because from_loss stacks its three groups of quantities in that order.
+    rows = [Row("min_abs_iota", "state", min_abs_iota, IOTA_FLOOR + IOTA_MARGIN, np.inf, IOTA_FLOOR),
+            Row("major_radius", "state", opt.major_radius, RADIUS_TARGET - width, RADIUS_TARGET + width,
+                RADIUS_TOLERANCE),
+            Row("b_axis", "state", opt.axis_field_strength, B0 - b_width, B0 + b_width, B_AXIS_TOLERANCE)]
+    if MIRROR_LIMIT:
+        rows.append(Row("mirror_ratio", "state",
+                        lambda state, runtime: opt.mirror_ratio(state, runtime, smooth=MIRROR_SMOOTH),
+                        -np.inf, MIRROR_LIMIT - MIRROR_MARGIN, MIRROR_LIMIT))
+    if IOTA_CEILING:  # scaled by the floor, as the floor row
+        rows.append(Row("max_abs_iota", "state", max_abs_iota, -np.inf, IOTA_CEILING - IOTA_MARGIN, IOTA_FLOOR))
+    if redl is not None:
+        rows.append(Row("bootstrap_mismatch", "state", bootstrap_mismatch(inp, redl, "gpu"),
+                        -np.inf, REDL_TOLERANCE, REDL_TOLERANCE))
+    if MERCIER_FLOOR is not None:
+        rows.append(Row("mercier", "state", mercier_row, MERCIER_FLOOR + MERCIER_MARGIN, np.inf, 1.0,
+                        count=MERCIER_BANDS))
+    if CURRENT_IOTA_WEIGHT:  # logged; the loss carries it
+        rows.append(Row("current_iota", "state", current_iota, -np.inf, np.inf, 1.0))
+    if EDGE is not None and EDGE.constrained:
+        lower, upper, scale = (np.array(v) for v in zip(*EDGE.bounds))
+        rows.append(Row("edge", "parameter", EDGE.row, lower, upper, scale, count=len(EDGE.bounds)))
+    rows.append(Row("aspect", "parameter", aspect, aspect_lower, aspect_upper, 0.5 * (aspect_upper - aspect_lower)))
+    if VACUUM_IOTA_FLOOR:
+        if EDGE is not None and EDGE.constrained:
+            # a concrete solve before the jitted rows trace it: its host solve compiles before the edge rows' programs
+            vacuum(jnp.asarray(inp.rbc), jnp.asarray(inp.zbs))
+        rows.append(Row("vacuum_iota", "boundary", lambda rbc, zbs, x: jnp.min(vacuum(rbc, zbs)),
+                        VACUUM_IOTA_FLOOR + IOTA_MARGIN, np.inf, VACUUM_IOTA_FLOOR))
+    rows.append(Row("coil_surface_distance", "boundary", clearance,
+                    (COIL_SURFACE_DISTANCE_LIMIT if EDGE is None else EDGE.clearance) + DISTANCE_MARGIN, np.inf,
+                    COIL_SURFACE_DISTANCE_LIMIT))
+    groups = [ROW_GROUPS.index(row.group) for row in rows]
+    assert groups == sorted(groups), "constraint rows out of the from_loss order"
+    return rows, vacuum, limits
+
+
+def row_functions(rows, group):
+    """The functions of the rows of one ``group``, in the rows' order: one ``from_loss`` argument."""
+    return tuple(row.function for row in rows if row.group == group)
+
+
+def row_bounds(rows):
+    """``(lower, upper, scales)`` of the constraint vector, an entry per row, in the rows' order."""
+    lower, upper, scales = zip(*(tuple(np.broadcast_to(v, row.count)[i] for v in (row.lower, row.upper, row.scale))
+                                 for row in rows for i in range(row.count)))  # a row's bounds: one, or one per entry
+    return list(lower), list(upper), list(scales)
+
+
+def row_slice(rows, name):
+    """The slice of the constraint vector that holds the rows named ``name``; empty where the case has none."""
+    start = 0
+    for row in rows:
+        if row.name == name:
+            return slice(start, start + row.count)
+        start += row.count
+    return slice(0, 0)
+
+
+# ---- the problem and its step log ------------------------------------------------------------------------------------
+def build_problem(args, inp, chart, target, rows, profiles, regrid):
+    """The free-boundary problem of the case at the seed design: the loss of ``target`` and the ``rows``."""
+    import jax.numpy as jnp
+    import vmex as vj
+
+    def loss(state, runtime, x):
+        residuals = target.residuals_state(state, runtime)
+        current = 0.5 * CURRENT_IOTA_WEIGHT * current_iota(state, runtime) ** 2 if CURRENT_IOTA_WEIGHT else 0.0
+        return 0.5 * jnp.vdot(residuals, residuals) + current
+
+    return vj.ThreeTermsFreeBoundaryProblem.from_loss(
+        inp, loss, chart.x0, field_from_parameters=chart, plasma_from_parameters=chart.plasma_params_at,
+        scales=chart.scales, names=chart.dof_names,
+        quantities=row_functions(rows, "state"), parameter_quantities=row_functions(rows, "parameter"),
+        boundary_quantities=row_functions(rows, "boundary"),
+        config=vj.ThreeTermsConfig(labelling=args.labelling, nphi=VC_GRID, ntheta=VC_GRID, chunk=CHUNK,
+                                   quadrature=(4 * int(inp.nfp) * VC_GRID, 2 * VC_GRID),
+                                   bootstrap=profiles,
+                                   bootstrap_helicity=REDL_HELICITY),
+        boundary_ftol=BOUNDARY_FTOL, boundary_max_residual=BOUNDARY_MAX_RESIDUAL,
+        # a restart resumes at its saved state, or on another radial grid at its saved deck
+        boundary_start=(None if args.restart is None else restart_input(args.restart) if regrid
+                        else args.restart / "wout.nc"))
+
+
+def build_constraints(problem, chart, rows, limits):
+    """SLSQP's constraints: the problem's rows within their bounds, then the coil limits."""
+    import vmex as vj
+
+    lower, upper, row_scales = row_bounds(rows)
+    # thousands of point rows: their Jacobian in forward mode, 32 directions at a time
+    import jax.numpy as jnp
+
+    def all_coil_rows(x):
+        rows = limits.rows(chart.coils_from_x(x), per_point=COIL_POINT_ROWS)
+        more = [] if EDGE is None else EDGE.coil_rows(x)
         return jnp.concatenate((jnp.ravel(rows), jnp.stack(more))) if more else rows
 
-    # thousands of point rows: their Jacobian in forward mode, 32 directions at a time
     coil_rows = vj.coil_constraint(all_coil_rows, forward_chunk=32 if COIL_POINT_ROWS else None)
-    constraints = [problem.nonlinear_constraint(list(lower), list(upper), scales=list(row_scales)), coil_rows]
+    constraints = [problem.nonlinear_constraint(lower, upper, scales=row_scales), coil_rows]
 
-    def remembered(jac, memo={}):  # the step log's and SLSQP's coil Jacobian at an accepted point are one evaluation
+    def remembered(jac):  # the step log's and SLSQP's coil Jacobian at an accepted point are one evaluation
+        memo = {}
+
         def at(x):
             key = np.asarray(x, dtype=float).tobytes()
             if memo.get("key") != key:
@@ -1201,110 +1445,110 @@ def main(argv=None):
         return at
 
     coil_rows.jac = remembered(coil_rows.jac)
+    return constraints
 
-    def stationarity(x):
-        """``(residual, rows)`` of the first-order condition at ``x``, in the optimizer's scaled variables.
 
-        ``residual = |g - A^T lambda| / |g|`` with ``g`` the loss gradient, ``A`` the unit gradients of the constraint
-        rows within ``KKT_ACTIVE`` of a bound (signed into the feasible side) and ``lambda >= 0`` their least-squares
-        multipliers; ``rows`` counts the nonzero ones.  0 at a constrained minimum, 1 where no active row opposes
-        the gradient: a stalled run with a large residual is not at a minimum.
-        """
-        from scipy.optimize import nnls
+def stationarity(problem, constraints, x):
+    """``(residual, rows)`` of the first-order condition at ``x``, in the optimizer's scaled variables.
 
-        g, active = problem.value_and_grad(x)[1] * problem.scales, []
-        for c in constraints:
-            value, lower, upper = np.broadcast_arrays(np.asarray(c.fun(x), dtype=float), c.lb, c.ub)
-            for bound, sign in ((lower, 1.0), (upper, -1.0)):
-                near = np.flatnonzero(np.isfinite(bound) & (sign * (value - bound) <= KKT_ACTIVE))
-                if near.size:
-                    active.append(sign * np.atleast_2d(c.jac(x))[near] * problem.scales)
-        if not active:
-            return 1.0, 0
-        A = np.concatenate(active)
-        norms = np.linalg.norm(A, axis=1)
-        lam, residual = nnls((A[norms > 0] / norms[norms > 0, None]).T, g)
-        return float(residual / np.linalg.norm(g)), int(np.count_nonzero(lam))
+    ``residual = |g - A^T lambda| / |g|`` with ``g`` the loss gradient, ``A`` the unit gradients of the constraint
+    rows within ``KKT_ACTIVE`` of a bound (signed into the feasible side) and ``lambda >= 0`` their least-squares
+    multipliers; ``rows`` counts the nonzero ones.  0 at a constrained minimum, 1 where no active row opposes
+    the gradient: a stalled run with a large residual is not at a minimum.
+    """
+    from scipy.optimize import nnls
 
-    def save(tag):
-        x = problem.accepted.parameters
-        chart.coils_from_x(jnp.asarray(x)).to_json(str(out / f"coils{tag}.json"))
-        if edge_latest:  # the accepted design's line, in the layout of benchmarks/edge_fixed_points.py
-            (out / f"edge_line{tag}.json").write_text(json.dumps(dict(periods=edge_guess["periods"], total=[edge_latest])))
-        if xp.pf_coils:
-            (out / f"pf{tag}.json").write_text(json.dumps(chart.pairs_dict(jnp.asarray(x))))
-        state_x, params_x = problem.state(x)  # the optimizer's own state: a re-solve can end elsewhere
-        deck = im.input_with_params(model.fixed, params_x)
-        vj.write_wout(str(out / f"wout{tag}.nc"), wout_from_state(inp=deck, state=state_x, fsqr=0.0, fsqz=0.0, fsql=0.0))
-        deck.to_indata(out / f"input.final{tag}")
+    g, active = problem.value_and_grad(x)[1] * problem.scales, []
+    for c in constraints:
+        value, lower, upper = np.broadcast_arrays(np.asarray(c.fun(x), dtype=float), c.lb, c.ub)
+        for bound, sign in ((lower, 1.0), (upper, -1.0)):
+            near = np.flatnonzero(np.isfinite(bound) & (sign * (value - bound) <= KKT_ACTIVE))
+            if near.size:
+                active.append(sign * np.atleast_2d(c.jac(x))[near] * problem.scales)
+    if not active:
+        return 1.0, 0
+    A = np.concatenate(active)
+    norms = np.linalg.norm(A, axis=1)
+    lam, residual = nnls((A[norms > 0] / norms[norms > 0, None]).T, g)
+    return float(residual / np.linalg.norm(g)), int(np.count_nonzero(lam))
 
-    last, edge_latest = dict(time=time.monotonic(), x=None), {}
-    edge_at = (jax.jit(lambda state, params, x, R, Z: edge_values(state, im.runtime_from_params(params, model.cfg), x, R, Z))
-               if xp.line is not None else None)
+
+def label_speed_ratio(params, nfp):
+    """Largest over smallest |d(R, Z)/d theta| on the LCFS, worst of 9 toroidal cuts (1: equal arc length)."""
+    rbc, zbs = np.asarray(params.rbc), np.asarray(params.zbs)
+    ntor = (rbc.shape[0] - 1) // 2
+    m = np.arange(rbc.shape[1])[None, :]
+    n = (np.arange(rbc.shape[0]) - ntor)[:, None] * nfp
+    theta, worst = np.linspace(0, 2 * np.pi, 361, endpoint=False), 1.0
+    for phi in np.linspace(0, 2 * np.pi / nfp, 9, endpoint=False):
+        angle = m[None] * theta[:, None, None] - n[None] * phi
+        dR = -np.sum(rbc[None] * m[None] * np.sin(angle), axis=(1, 2))
+        dZ = np.sum(zbs[None] * m[None] * np.cos(angle), axis=(1, 2))
+        speed = np.hypot(dR, dZ)
+        worst = max(worst, float(speed.max() / speed.min()))
+    return worst
+
+
+def boundary_jacobian_condition(problem):
+    """Condition number of the last boundary Jacobian (columns scaled to unit norm), None before one."""
+    J_b = problem._anchor.get("J_b")
+    if J_b is None:
+        return None
+    J_b = np.asarray(J_b)
+    sv = np.linalg.svd(J_b / np.maximum(np.linalg.norm(J_b, axis=0), 1e-300), compute_uv=False)
+    return float(sv[0] / sv[-1])
+
+
+def save_point(out, problem, chart, tag):
+    """Write the accepted point's coils, WOUT and deck: ``coils<tag>.json``, ``wout<tag>.nc``, ``input.final<tag>``."""
+    import jax.numpy as jnp
+    import vmex as vj
+    from vmex.core import implicit as im
+    from vmex.core.wout import wout_from_state
+
+    x = problem.accepted.parameters
+    chart.coils_from_x(jnp.asarray(x)).to_json(str(out / f"coils{tag}.json"))
+    if EDGE is not None:
+        EDGE.save(out, x, tag)
+    state_x, params_x = problem.state(x)  # the optimizer's own state: a re-solve can end elsewhere
+    deck = im.input_with_params(problem.model.fixed, params_x)
+    vj.write_wout(str(out / f"wout{tag}.nc"), wout_from_state(inp=deck, state=state_x, fsqr=0.0, fsqz=0.0, fsql=0.0))
+    deck.to_indata(out / f"input.final{tag}")
+
+
+def step_logger(args, out, inp, chart, problem, rows, vacuum, constraints, started):
+    """The callback of an accepted step: it appends the step's row to ``metrics.jsonl``, prints the ``[step N]``
+    line and, every ``SAVE_EVERY`` steps, saves the point (``save_point``)."""
+    import jax
+    import jax.numpy as jnp
+    from vmex import optimize as opt
+    from vmex.core import implicit as im
+    from vmex.core.errors import VmecError
+    from vmex.core.wout import wout_from_state
+
+    model, coil_rows, fold = problem.model, constraints[1], current_in_solve()
+    index = {row.name: row_slice(rows, row.name).start for row in rows}  # first entry of each named row
+    redl_rows = row_slice(rows, "bootstrap_mismatch")
+    nredl = redl_rows.stop - redl_rows.start
+    last = dict(time=time.monotonic(), x=None)
     diagnostics = jax.jit(lambda state, params: (current_iota(state, im.runtime_from_params(params, model.cfg)),
                                                  min_d_merc(state, im.runtime_from_params(params, model.cfg))))
-
-    def label_speed_ratio(params):
-        """Largest over smallest |d(R, Z)/d theta| on the LCFS, worst of 9 toroidal cuts (1: equal arc length)."""
-        rbc, zbs = np.asarray(params.rbc), np.asarray(params.zbs)
-        ntor = (rbc.shape[0] - 1) // 2
-        m = np.arange(rbc.shape[1])[None, :]
-        n = (np.arange(rbc.shape[0]) - ntor)[:, None] * int(inp.nfp)
-        theta, worst = np.linspace(0, 2 * np.pi, 361, endpoint=False), 1.0
-        for phi in np.linspace(0, 2 * np.pi / int(inp.nfp), 9, endpoint=False):
-            angle = m[None] * theta[:, None, None] - n[None] * phi
-            dR = -np.sum(rbc[None] * m[None] * np.sin(angle), axis=(1, 2))
-            dZ = np.sum(zbs[None] * m[None] * np.cos(angle), axis=(1, 2))
-            speed = np.hypot(dR, dZ)
-            worst = max(worst, float(speed.max() / speed.min()))
-        return worst
-
-    def boundary_jacobian_condition():
-        """Condition number of the last boundary Jacobian (columns scaled to unit norm), None before one."""
-        J_b = problem._anchor.get("J_b") if isinstance(problem._anchor, dict) else None
-        if J_b is None:
-            return None
-        J_b = np.asarray(J_b)
-        sv = np.linalg.svd(J_b / np.maximum(np.linalg.norm(J_b, axis=0), 1e-300), compute_uv=False)
-        return float(sv[0] / sv[-1])
 
     def log_step():
         x = problem.accepted.parameters
         h = problem.constraint_values(x)
-        redl_h = np.asarray(h[3 + len(mirror) + len(ceiling):][:nredl])
+        redl_h = np.asarray(h[redl_rows])
         res = problem.boundary_residual(x)
         now = time.monotonic()
         state_x, params_x = problem.state(x)
         runtime_x = im.runtime_from_params(params_x, model.cfg)
         try:  # a diagnostic: its own fixed-boundary solve may fail where the accepted point is fine
             vac = np.asarray(vacuum(params_x.rbc, params_x.zbs))
-        except RuntimeError as error:
+        except (RuntimeError, VmecError) as error:
             vac = np.full(3, np.nan)
             print(f"[step {problem.accepted_step}] vacuum iota not available: {str(error).splitlines()[0][:200]}",
                   flush=True)
-        edge_row = {}
-        if edge_at is not None:  # the line follows the accepted designs: each solve starts from the last one's nodes
-            values, line = edge_at(state_x, params_x, jnp.asarray(x), jnp.asarray(edge_guess["R"]),
-                                   jnp.asarray(edge_guess["Z"]))
-            values = np.asarray(values)
-            more, at = {}, 5
-            for name, count, given in (("edge_outer_legs_m", 2, xp.outer_legs), ("edge_leg_coils_m", 2, xp.leg_coils),
-                                       ("vessel_gap_m", 1, xp.vessel_gap), ("vessel_legs_m", 2, xp.vessel_legs)):
-                if given is not None:
-                    more[name], at = values[at:at + count].tolist() if count > 1 else float(values[at]), at + count
-            edge_row = dict(edge_trace=float(values[0]), edge_gap_m=float(values[1]), edge_coil_distance_m=float(values[2]),
-                            edge_reach_m=float(values[3]), edge_height_spread_m=float(values[4]), **more,
-                            edge_R_m=float(line.R[0]), edge_Z_m=float(line.Z[0]), edge_newton_step_m=float(line.step))
-            if np.all(np.isfinite(values)):
-                edge_guess.update(R=np.asarray(line.R), Z=np.asarray(line.Z))
-                edge_latest.update(R=float(line.R[0]), Z=float(line.Z[0]), trace=float(values[0]),
-                                   R_nodes=np.asarray(line.R).tolist(), Z_nodes=np.asarray(line.Z).tolist())
-        if xp.pf_coils:
-            edge_row.update({f"pf_{k}": v for k, v in chart.pairs_dict(jnp.asarray(x)).items() if k != "nfp"},
-                            pf_coil_distance_m=float(pf_distance(jnp.asarray(x))))
-        if vessel is not None:
-            edge_row.update(vessel_coils_m=float(coils_off_vessel(jnp.asarray(x))))
-        tape = float(conductor(jnp.asarray(x)))
+        edge_row = {} if EDGE is None else EDGE.log(state_x, params_x, x, model)
         iota_i, d_merc = map(float, diagnostics(state_x, params_x))
         # The equilibrium's own accuracy: the radial force balance error of each surface (WOUT's equif), over the
         # core 0.1 < s < 0.9 (the end surfaces carry the one-sided differences of the measure itself).
@@ -1312,36 +1556,35 @@ def main(argv=None):
                                            fsqr=0.0, fsqz=0.0, fsql=0.0).equif)
         s_full = np.linspace(0.0, 1.0, equif.size)
         core = np.abs(equif[(s_full > 0.1) & (s_full < 0.9)])
+        # "qa" holds the case's target (QA, QH or QI residual, squared): twice the loss, less its current_iota term
         row = dict(step=problem.accepted_step,
-                   qa=2 * (problem.fun(x) / xp.loss_scale - xp.conductor_weight * tape)
-                   - CURRENT_IOTA_WEIGHT * iota_i**2, conductor_ma_m=tape, **edge_row,
-                   current_iota=iota_i, min_d_merc=d_merc, min_abs_iota=float(h[0]),
+                   qa=2 * problem.fun(x) - CURRENT_IOTA_WEIGHT * iota_i**2,
+                   **edge_row,
+                   current_iota=iota_i, min_d_merc=d_merc, min_abs_iota=float(h[index["min_abs_iota"]]),
                    geometric_axis_iota=float(abs(opt.axis_iota(state_x, runtime_x))),
                    vacuum_iota_axis=float(vac[0]), vacuum_iota_min=float(vac.min()), vacuum_iota_edge=float(vac[-1]),
-                   major_radius_m=float(h[1]), b_axis_t=float(h[2]),
+                   major_radius_m=float(h[index["major_radius"]]), b_axis_t=float(h[index["b_axis"]]),
                    beta=float(opt.volume_average_beta(state_x, runtime_x)),
                    coil_currents_a=np.asarray(chart.base_currents_at(jnp.asarray(x))).tolist(),
                    **({"redl_mismatch": float(redl_h[0]),
                        "redl_max_row": float(np.max(np.abs(redl_h)))} if nredl else {}),
                    **({"redl_max_relative": model.bootstrap_residual(state_x, params_x)} if fold else {}),
-                   coil_surface_distance_m=float(h[-1]), aspect=float(h[-2 - len(vacuum_floor)]),
+                   coil_surface_distance_m=float(h[index["coil_surface_distance"]]),
+                   aspect=float(h[index["aspect"]]),
                    coil_minimum_scaled_slack=float(np.min(coil_rows.fun(x))),
                    phiedge_factor=float(chart.phiedge_at(jnp.asarray(x)) / chart.phiedge) if FREE_PHIEDGE else 1.0,
                    bn=res.normal, bn_max=res.normal_max, pressure_balance=res.pressure, sheet_current=res.sheet_current,
                    force_balance_rms=float(np.sqrt(np.mean(core**2))), force_balance_max=float(core.max()),
                    force_balance=equif.tolist(),
-                   label_speed_ratio=label_speed_ratio(params_x), boundary_jacobian_cond=boundary_jacobian_condition(),
+                   label_speed_ratio=label_speed_ratio(params_x, int(inp.nfp)),
+                   boundary_jacobian_cond=boundary_jacobian_condition(problem),
                    step_box=None if last["x"] is None else float(np.max(np.abs(x - last["x"]) / problem.scales)),
                    step_seconds=now - last["time"], elapsed_seconds=now - started, **problem.stats,
                    peak_gpu_gib=(jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30)
-        if model._gauge is not None:  # the gauge rows' share of the accepted fit's cost (0 where it was set)
-            M, reference = model._gauge
-            g = np.asarray(M @ (model._arc_label(params_x.rbc, params_x.zbs) - reference))
-            r = np.asarray(model._rows(state_x, params_x, problem.field(jnp.asarray(x))))
-            row["gauge_share"] = float(g @ g / (r @ r))
-        if args.steps > problem.accepted_step or problem.accepted_step:  # an optimization, not a re-solve alone
+        optimizing = args.steps > 0 or problem.accepted_step > 0  # not a re-solve alone
+        if optimizing:
             try:  # a diagnostic
-                row["kkt_residual"], row["kkt_rows"] = stationarity(x)
+                row["kkt_residual"], row["kkt_rows"] = stationarity(problem, constraints, x)
             except Exception as error:
                 print(f"[step {problem.accepted_step}] stationarity not available: {str(error)[:200]}", flush=True)
         last.update(time=now, x=np.array(x, dtype=float))
@@ -1355,32 +1598,76 @@ def main(argv=None):
               f"coil_slack={row['coil_minimum_scaled_slack']:.4f} "
               + (f"redl={row['redl_mismatch']:.2e} " if nredl else "")
               + (f"redl(max rel)={row['redl_max_relative']:.1e} " if fold else "")
-              + f"B.n={res.normal:.1e} (max {res.normal_max:.1e}) pressure={res.pressure:.1e} K={res.sheet_current:.1e} "
+              + f"B.n={res.normal:.1e} (max {res.normal_max:.1e}) pressure={res.pressure:.1e} "
+              f"K={res.sheet_current:.1e} "
               f"force={row['force_balance_rms']:.1e}/{row['force_balance_max']:.1e} "
               + f"label_ratio={row['label_speed_ratio']:.2f} "
               + (f"cond={row['boundary_jacobian_cond']:.0f} " if row["boundary_jacobian_cond"] else "")
-              + (f"gauge={row['gauge_share']:.1e}/{row['gauge_directions']} " if "gauge_share" in row else "")
-              + (f"edge: Tr M={row['edge_trace']:.3f} gap={row['edge_gap_m']:.4f} reach={row['edge_reach_m']:.4f} "
-                 f"dZ={row['edge_height_spread_m']:.4f} coils={row['edge_coil_distance_m']:.4f} "
-                 f"(R, Z)=({row['edge_R_m']:.4f}, {row['edge_Z_m']:.4f}) " if "edge_trace" in row else "")
-              + "".join(f"{label}={','.join(f'{v:.4f}' for v in np.atleast_1d(row[name]))} " for label, name in (
-                  ("outer", "edge_outer_legs_m"), ("leg-coils", "edge_leg_coils_m"), ("vessel-gap", "vessel_gap_m"),
-                  ("vessel-coils", "vessel_coils_m"), ("vessel-legs", "vessel_legs_m")) if name in row)
-              + f"conductor={tape:.3f} "
+              + (f"labels={row['label_directions']} " if model._labels is not None else "")
+              + EdgeRows.text(row)
               + (f"step={row['step_box']:.2f} " if row["step_box"] is not None else "")
               + (f"kkt={row['kkt_residual']:.2f}/{row['kkt_rows']} " if "kkt_residual" in row else "")
               + f"{row['step_seconds']:.1f}s "
               f"(trials {row['trials']}, boundary evaluations {row['boundary_evaluations']}, "
               f"peak {row['peak_gpu_gib']:.1f} GiB)", flush=True)
         if row["step"] % SAVE_EVERY == 0:
-            save(f".step{row['step']}")
+            save_point(out, problem, chart, f".step{row['step']}")
 
+    return log_step
+
+
+def main(argv=None):
+    # 1. Read the flags, make the run directory, write run.json and set the JAX environment before its import.
+    # 2. build_seed: the deck (input.run), its fixed-boundary solve and the current's treatment.
+    # 3. build_design: the coils (coils.initial.json) and the chart of the design variables.
+    # 4. constraint_rows and build_problem: the named rows, then the free-boundary problem at the seed design.
+    # 5. build_constraints and step_logger, then SLSQP with a logged row for every accepted step.
+    # 6. Save the final coils, WOUT and deck, and write summary.json.
+    global RESOLUTION, EDGE
+    args = parse_args(argv)
+    RESOLUTION = (*(args.modes or RESOLUTION[:2]), args.ns or RESOLUTION[2])
+    out = args.output.resolve()
+    out.mkdir(parents=True, exist_ok=False)
+    write_run_record(out, args)
+    os.environ["JAX_ENABLE_X64"] = "1"
+    # The vacuum-iota solve runs inside a jax.pure_callback; a GPU program XLA compiles there (its Krylov
+    # certification fallback) deadlocks in the autotuner, which waits on the device the callback holds.
+    os.environ["XLA_FLAGS"] = (os.environ.get("XLA_FLAGS", "") + " --xla_gpu_autotune_level=0").strip()
+    os.environ.setdefault("JAX_PLATFORMS", "cuda,cpu")
+
+    # Every heavy import happens here, in this order, before the clock starts.
+    import jax  # noqa: F401
+    import jax.numpy  # noqa: F401
+    import essos.coils  # noqa: F401
+    import essos.surfaces  # noqa: F401
+    import vmex  # noqa: F401
+    from vmex import optimize as opt
+    import vmex.core.implicit  # noqa: F401
+    import vmex.core.wout  # noqa: F401
+
+    started = time.monotonic()
+    inp, fixed, redl, profiles, regrid = build_seed(args, out)
+    chart = build_design(args, out, inp, fixed)
+    xp = edge_target(args, out)
+    chart = with_coil_pairs(chart, xp, int(inp.nfp))
+    EDGE = EdgeRows(xp, inp, chart)
+
+    target = target_residual()
+    flat_arc = args.labelling == "flat_arc"
+    rows, vacuum, limits = constraint_rows(inp, chart, redl)
+    problem = build_problem(args, inp, chart, target, rows, profiles, regrid)
+    model = problem.model
+    print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
+          f"{chart.size} design coordinates; built in {time.monotonic() - started:.0f} s"
+          + (f"; label rows on {problem.stats['label_directions']} directions" if flat_arc else ""), flush=True)
+
+    constraints = build_constraints(problem, chart, rows, limits)
+    log_step = step_logger(args, out, inp, chart, problem, rows, vacuum, constraints, started)
     log_step()
     result = opt.minimize(problem, x0=problem.accepted.parameters, method="SLSQP", constraints=constraints,
                           callback=lambda x: log_step(),
-                          options=dict(maxiter=args.steps - problem.accepted_step, ftol=OPTIMIZER_FTOL,
-                                       restart_on_rejection=True))
-    save("")
+                          options=dict(maxiter=args.steps - problem.accepted_step, ftol=OPTIMIZER_FTOL))
+    save_point(out, problem, chart, "")
     summary = dict(accepted_steps=problem.accepted_step, success=bool(result.success), message=str(result.message),
                    stop_reason=getattr(result, "stop_reason", None),
                    failed_trials=problem.metadata["holder"]["failed_trials"],
@@ -1390,6 +1677,7 @@ def main(argv=None):
                    elapsed_seconds=time.monotonic() - started)
     (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary))
+
 
 if __name__ == "__main__":
     main()

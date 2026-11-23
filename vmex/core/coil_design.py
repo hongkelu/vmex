@@ -402,4 +402,3 @@ class PoloidalCoilDesign:
     def plasma_params_at(self, params, x):
         """The design's plasma parameters at ``x``."""
         return self.design.plasma_params_at(params, jnp.asarray(x)[:self.n])
-

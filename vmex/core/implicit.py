@@ -1064,26 +1064,18 @@ def _assemble(z: SpectralState, rt_p: SolverRuntime, frozen: SpectralState,
 
     At ``z = P(x*)`` and the solved parameters this reproduces ``x*``
     exactly; the edge term carries the differentiable boundary dependence
-    (``edge_mask`` and the dof subspace are disjoint).  The last term moves
-    the interior entries no equation evolves (the constrained m=1 pair) with
-    their edge value, on the ``sqrt(s)`` profile of
-    :func:`~vmex.core.solver.hot_restart_state`: held at the old value they
-    would leave a jump between the last two surfaces.
+    (``edge_mask`` and the dof subspace are disjoint).
     """
     setup = rt_p.setup
     boundary = dict(R_cos=setup.boundary_R_cos, R_sin=setup.boundary_R_sin,
                     Z_cos=setup.boundary_Z_cos, Z_sin=setup.boundary_Z_sin)
     dz = P(jax.tree.map(lambda a, b: a - b, z, frozen))
-    rho = jnp.sqrt(jnp.asarray(setup.s_full)).at[-1].set(0.0)[:, None]
-    follow = {name: rho * getattr(edge_mask, name)[-1] * (value - getattr(frozen, name)[-1])
-              for name, value in boundary.items()}
-    kept = P(SpectralState(**follow, L_cos=jnp.zeros_like(frozen.L_cos), L_sin=jnp.zeros_like(frozen.L_sin)))
     out = {}
     for name in _STATE_FIELDS:
         x = getattr(frozen, name) + getattr(dz, name)
         if name in boundary:
             e = getattr(edge_mask, name)
-            x = x + e * (boundary[name][None, :] - getattr(frozen, name)) + follow[name] - getattr(kept, name)
+            x = x + e * (boundary[name][None, :] - getattr(frozen, name))
         out[name] = x
     return _held(SpectralState(**out), rt_p)
 

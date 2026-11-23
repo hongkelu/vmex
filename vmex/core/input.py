@@ -847,7 +847,7 @@ class VmecInput:
     lambda_m0_floor: float | None = None  #: radial m=0 lambda preconditioner floor (None: diagonal)
     position_nmax: int = 0           #: highest helical harmonic controlled (0 = uniform B_Z only)
     lthree_terms: bool = False       #: free boundary from the three interface conditions instead of NESTOR
-    three_terms_labelling: str = "equal_arc"  #: the boundary's poloidal labelling: anchored, equal_arc or none
+    three_terms_labelling: str = "flat_arc"   #: the boundary's poloidal labelling: flat_arc, equal_arc or anchored
     three_terms_label_weight: float = -1.0    #: labelling-row weight; < 0 is the labelling's default
 
     def __post_init__(self) -> None:
@@ -884,8 +884,8 @@ class VmecInput:
         set_(self, "lthree_terms", bool(self.lthree_terms))
         set_(self, "three_terms_labelling", str(self.three_terms_labelling).strip().lower())
         set_(self, "three_terms_label_weight", float(self.three_terms_label_weight))
-        if self.three_terms_labelling not in ("anchored", "equal_arc", "none"):
-            raise ValueError("THREE_TERMS_LABELLING must be 'anchored', 'equal_arc' or 'none'")
+        if self.three_terms_labelling not in ("flat_arc", "equal_arc", "anchored"):
+            raise ValueError("THREE_TERMS_LABELLING must be 'flat_arc', 'equal_arc' or 'anchored'")
 
         # readin.f stops at the first nonpositive or decreasing entry; later
         # values are outside multi_ns_grid and never reach runvmec.f.
@@ -1354,7 +1354,7 @@ class VmecInput:
             position_gain=float(get("POSITION_GAIN", 4.0)),
             position_nmax=int(get("POSITION_NMAX", 0)),
             lthree_terms=bool(get("LTHREE_TERMS", False)),
-            three_terms_labelling=str(get("THREE_TERMS_LABELLING", "equal_arc")),
+            three_terms_labelling=str(get("THREE_TERMS_LABELLING", "flat_arc")),
             three_terms_label_weight=float(get("THREE_TERMS_LABEL_WEIGHT", -1.0)),
             lgiveup=bool(get("LGIVEUP", False)),
             fgiveup=float(get("FGIVEUP", 30.0)),

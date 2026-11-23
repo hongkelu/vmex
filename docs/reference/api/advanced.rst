@@ -161,9 +161,6 @@ Free boundary
 .. automodule:: vmex.core.extender
    :members:
 
-.. automodule:: vmex.core.periodic_fieldlines
-   :members:
-
 Physics objectives
 ------------------
 
